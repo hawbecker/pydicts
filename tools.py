@@ -8,7 +8,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from netCDF4 import Dataset as ncdf
 from matplotlib import cm
-import scipy.io.netcdf as netcdf
 import matplotlib.colors as mcolors
 
 def spectra1d(data,ds):
@@ -17,10 +16,18 @@ def spectra1d(data,ds):
     return freqs,ps
 
 
-def write1DVar(f,var,varstr,vartype,vardims,varunits):
-    newvar        = f.createVariable(varstr,vartype,(vardims,))
-    newvar[:]     = var
-    newvar.units  = varunits
+def createNewNetCDF(fname,dimnames,dims,ncformat='NETCDF4_CLASSIC'):
+    newncdf = ncdf(fname,'w',format=ncformat)
+    for dd,dim in enumerate(dimnames):
+        newncdf.createDimension(dim,dims[dd])
+    return newncdf
+
+
+def writeVarToNetCDF(ncdf,var,varname,dtype,dims,varunits):
+    outvar       = ncdf.createVariable(varname,dtype,dims)
+    outvar[:]    = var
+    outvar.units = varunits
+
 
 def calcTRI(zz,wndwx,wndwy):
     if (wndwx/2.0) - np.floor(wndwx/2.0) == 0.0:
