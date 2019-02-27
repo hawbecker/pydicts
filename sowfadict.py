@@ -210,18 +210,30 @@ class averageprofile():
             self.q2mean = newvar
         elif var == 'q3_mean':
             self.q3mean = newvar
+        elif var == 'uu_mean':
+            self.uvarRES = newvar
         elif var == 'R11_mean':
-            self.r11mean = newvar
-        elif var == 'R12_mean':
-            self.r12mean = newvar
-        elif var == 'R13_mean':
-            self.r13mean = newvar
+            self.uvarSGS = newvar
+        elif var == 'vv_mean':
+            self.vvarRES = newvar
         elif var == 'R22_mean':
-            self.r22mean = newvar
-        elif var == 'R23_mean':
-            self.r23mean = newvar
+            self.vvarSGS = newvar
+        elif var == 'ww_mean':
+            self.wvarRES = newvar
         elif var == 'R33_mean':
-            self.r33mean = newvar
+            self.wvarSGS = newvar
+        elif var == 'uv_mean':
+            self.uvcovRES = newvar
+        elif var == 'R12_mean':
+            self.uvcovSGS = newvar
+        elif var == 'uw_mean':
+            self.uwcovRES = newvar
+        elif var == 'R13_mean':
+            self.uwcovSGS = newvar
+        elif var == 'vw_mean':
+            self.vwcovRES = newvar
+        elif var == 'R23_mean':
+            self.vwcovSGS = newvar
 
 class errorlog():
     def __init__(self,fd):
