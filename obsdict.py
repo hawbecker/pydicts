@@ -493,4 +493,152 @@ def read_radiosonde(fpath):
     sonde_df['Theta'] = (sonde_df.TC+273.15)*((1000.0/sonde_df.P)**0.286)
     return sonde_df
     
- 
+def read_AWOS(file_loc, weak_wind_dir_correction=True):
+    '''
+    Read in AWOS data from ftp://ftp.ncdc.noaa.gov/pub/data/noaa/2001/ with
+    the station identifiers to be found in the isd-history.txt file. Search
+    for the call sign and then find the station ID from that. Files include
+    1 year of data.
+    '''
+    def get_wspd_and_dir(ll,df,weak_wind_dir_correction):
+        ll = ll.replace('KT','')
+        if '-' in ll: ll = ll.replace('-','')
+        if 'AUTO' in ll: ll = ll.replace('AUTO','999')
+        if 'AUT' in ll: ll = ll.replace('AUT','999')
+        if 'VRB' in ll: ll = ll.replace('VRB','999')
+        if 'VBR' in ll: ll = ll.replace('VBR','999')
+        if 'VEB' in ll: ll = ll.replace('VEB','999')
+        if 'V' in ll: ll = ll.replace('V','')
+        if 'B' in ll: ll = ll.replace('B','')
+        if 'MTN' in ll: ll = ll.replace('MTN','')
+        if 'NO' in ll: ll = ll.replace('NO','')
+        if 'G' in ll: ll = ll.split('G')[0]
+        if 'O' in ll: ll = ll.replace('O','0')
+        if '?' in ll: ll = ll.replace('?','0')
+        if 'K' in ll or len(ll)<5 or '/' in ll or 'PPPPP' in ll or '`' in ll:
+            df['wdir'] = np.nan; df['wspd'] = np.nan
+        else:
+            df['wdir'] = float(ll[:3])
+            df['wspd'] = np.round(float(ll[3:5])*0.51444444444,3)
+
+            if (float(ll[:3]) < 0.001) & weak_wind_dir_correction:
+                df['wdir'] = 999.0
+
+
+    def get_pressure(ll,df):
+        if ';' in ll: 
+            ll = ll.split(';')
+            for vals in ll:
+                if 'SLP' in vals: 
+                    ll = vals
+        if 'T' in ll: 
+            Tll = 'T{}'.format(ll.split('T')[-1])
+            get_temperature(Tll,df)
+            ll = ll.split('T')[0]
+        if '/' in ll: ll = ll.split('/')[0]
+        if '+' in ll or ll == 'SLP' or 'NO' in ll: 
+            df['pres'] = np.nan
+        else:
+            ll = ll.split('SLP')[-1]
+            if 'LP' in ll: ll = ll.replace('LP','')
+            try:
+                p_raw = float(ll)
+            except:
+                p_raw = np.nan
+            if p_raw < 700.0: 
+                p = 1000.0+p_raw*0.1
+            else:
+                p = 900.0+p_raw*0.1
+            df['pres'] = p
+
+    def get_temperature(ll,df):
+        if ';' in ll: ll = ll.split(';')[0]
+        if 'O' in ll: ll = ll.replace('O','0')
+#        if 'ANS' in ll:
+        if any(char.isalpha() for char in ll[1:]) or '?' in ll:
+            t_raw = np.nan
+            dp_raw = np.nan
+        else:
+            t_raw = ll[1:5]
+            dp_raw = ll[5:]
+            if t_raw[0] == '1': 
+                t_raw = -1.0*float(t_raw[1:])*0.1
+            else:
+                t_raw = float(t_raw[1:])*0.1
+            if dp_raw[0] == '1': 
+                dp_raw = -1.0*float(dp_raw[1:])*0.1
+            else:
+                dp_raw = float(dp_raw[1:])*0.1
+        df['tmpc'] = t_raw
+        df['dwpt'] = dp_raw
+
+    def get_precip(ll,df):
+        if '/' in ll: ll = ll.replace('/','0')
+        if 'O' in ll: ll = ll.replace('O','0')
+        prec_raw = int(ll[1:])*0.01
+        df['pcip'] = prec_raw
+
+    def get_clouds(ll,df,cloud_types,cld_lvl):
+        for cld in cloud_types:
+            if cld in ll: cloud = cld
+        if cld_lvl == 0:
+            df['cldc'] = cloud
+        else:
+            df['cldc'] = df['cldc']+','+cloud
+        
+    f = open(file_loc)
+    cloud_types = ['CLR', 'FEW', 'SCT', 'BKN', 'OVC']
+    for lcnt,line in enumerate(f):
+
+        line = line.split(' ')
+        tt = line[0][15:27]
+        df_0 = pd.DataFrame({'datetime': [pd.to_datetime(str(tt), format='%Y%m%d%H%M')],
+                            'wspd': [np.nan], 
+                            'wdir': [np.nan],
+                            'tmpc': [np.nan],
+                            'dwpt': [np.nan],
+                            'pr'  : [np.nan],
+                            'pcip': [np.nan],
+                            'cldc': [np.nan]}).set_index('datetime')
+        if np.shape(line)[0] != 1:
+            got_winds       = False
+            got_temperature = False
+            got_pressure    = False
+            got_clouds      = False
+            got_precip      = False
+            cld_lvl         = 0
+            for ll in line:
+                if len(ll) > 0 and ':' not in ll:
+                    if 'KT' in ll and len(ll) > 5 and got_winds == False: 
+                        get_wspd_and_dir(ll,df_0, weak_wind_dir_correction)
+                        got_winds = True  
+
+                    elif 'SLP' in ll and got_pressure == False:
+                        get_pressure(ll,df_0)
+                        got_pressure = True
+
+                    elif ll[0] == 'T' and ll != 'TEMP' and ll !='TIME' and \
+                    'TMP' not in ll and ll != 'TOTAL' and len(ll) == 9 and got_temperature == False:
+                        get_temperature(ll,df_0)
+                        got_temperature = True
+
+                    elif ll[0] == 'P' and len(ll) == 5 and got_precip == False and \
+                                  all(char.isdigit() for char in ll[1:]):
+                        get_precip(ll,df_0)
+                        got_precip = True
+
+                    if got_clouds == False and any(cld in ll for cld in cloud_types):
+                        get_clouds(ll,df_0,cloud_types,cld_lvl)
+                        cld_lvl += 1
+#                    if cloud_coverage:
+#                        df_0['cldc'] = ll
+#                        cloud_coverage = False
+#                    elif 'SM' in ll:
+#                        cloud_coverage = True
+        if lcnt == 0:
+            df = df_0
+        else:
+            df = df.append(df_0)
+    f.close()
+    return df
+         
