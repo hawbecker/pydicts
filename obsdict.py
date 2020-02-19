@@ -501,6 +501,7 @@ def read_AWOS(file_loc, weak_wind_dir_correction=True):
     1 year of data.
     '''
     def get_wspd_and_dir(ll,df,weak_wind_dir_correction):
+        #print(ll)
         ll = ll.replace('KT','')
         if '-' in ll: ll = ll.replace('-','')
         if 'AUTO' in ll: ll = ll.replace('AUTO','999')
@@ -509,13 +510,15 @@ def read_AWOS(file_loc, weak_wind_dir_correction=True):
         if 'VBR' in ll: ll = ll.replace('VBR','999')
         if 'VEB' in ll: ll = ll.replace('VEB','999')
         if 'V' in ll: ll = ll.replace('V','')
+        if 'E' in ll: ll = ll.replace('E','')
         if 'B' in ll: ll = ll.replace('B','')
         if 'MTN' in ll: ll = ll.replace('MTN','')
         if 'NO' in ll: ll = ll.replace('NO','')
+        if ',(' in ll: ll = ll.replace(',(','00')
         if 'G' in ll: ll = ll.split('G')[0]
         if 'O' in ll: ll = ll.replace('O','0')
         if '?' in ll: ll = ll.replace('?','0')
-        if 'K' in ll or len(ll)<5 or '/' in ll or 'PPPPP' in ll or '`' in ll:
+        if 'K' in ll or len(ll)<5 or '/' in ll or 'PPPPP' in ll or '`' in ll or ll[0]=='D' or 'QDR' in ll:
             df['wdir'] = np.nan; df['wspd'] = np.nan
         else:
             df['wdir'] = float(ll[:3])
@@ -554,6 +557,8 @@ def read_AWOS(file_loc, weak_wind_dir_correction=True):
     def get_temperature(ll,df):
         if ';' in ll: ll = ll.split(';')[0]
         if 'O' in ll: ll = ll.replace('O','0')
+        if '-' in ll: ll = ll.replace('-','0')
+
 #        if 'ANS' in ll:
         if any(char.isalpha() for char in ll[1:]) or '?' in ll:
             t_raw = np.nan
@@ -565,7 +570,9 @@ def read_AWOS(file_loc, weak_wind_dir_correction=True):
                 t_raw = -1.0*float(t_raw[1:])*0.1
             else:
                 t_raw = float(t_raw[1:])*0.1
-            if dp_raw[0] == '1': 
+            if dp_raw == '////':
+                dp_raw = np.nan
+            elif dp_raw[0] == '1': 
                 dp_raw = -1.0*float(dp_raw[1:])*0.1
             else:
                 dp_raw = float(dp_raw[1:])*0.1
@@ -642,3 +649,115 @@ def read_AWOS(file_loc, weak_wind_dir_correction=True):
     f.close()
     return df
          
+def AWOS_to_ds(fdir,stn,year_range,lat,lon,onshore_min=None,onshore_max=None,saveds=False,set_vrb_wdir=True):
+    print('starting {}'.format(stn))
+    list_of_files = sorted(glob.glob('{}{}*'.format(fdir,stn)))
+    for yy,year in enumerate(year_range):
+        print(year)
+        for ff in list_of_files:
+            if ff[-8:-4] == str(year):
+                f = ff
+        df0 = read_AWOS(f)
+        if yy == 0:
+            df = df0
+        else:
+            df = pd.concat([df,df0])
+
+    ds = df.to_xarray()
+    ds = ds.assign_coords({'station':stn}).expand_dims('station')
+    ds['lon'] = (['station'],[lon])
+    ds['lat'] = (['station'],[lat])
+    if onshore_min is not None: ds['onshore_min'] = (['station'],[onshore_min])
+    if onshore_max is not None: ds['onshore_max'] = (['station'],[onshore_max])
+    ds = ds.assign_coords({'lon':ds.lon, 'lat':ds.lat})
+    if saveds: ds.to_netcdf(fsave_str.format(fdir,stn,year_range[0],year_range[-1]))
+    return(ds)
+
+def get_FINO_obs(fdir,FINO=1,boom_deg=None):
+    if FINO==1:
+        var_dict = {
+            'name'     : ['Wind_Speed_','Wind_Direction_','Air_Temperature_','Surface_Temperature_Buoy',
+                          'Air_Pressure_','Precipitation_','Humidity_','Global_Radiation_'],
+            'str_len'  : [16,19,21,25,17,19,14,21],
+            'indx_str' : ['spd_levels','dir_levels','tmp_levels','sst_levels','prs_levels','pcp_levels',
+                          'rh_levels','rad_levels'],
+            'var_str'  : ['wspd','wdir','temp','sst','pres','prcp','rh','rad']
+        }
+    elif FINO==2:
+        var_dict = {
+            'name'     : ['Wind_Speed_','Wind_Direction_','Air_Temperature_','Anemometer_wind_speed_U_',
+                          'Anemometer_wind_direction_U_','Pressure_','Relative_humidity_',
+                          'Global_radiation_60m','Precipitation_60m'],
+            'str_len'  : [16,19,21,29,33,14,23,21,18],
+            'indx_str' : ['spd_levels','dir_levels','tmp_levels','anm_levels','anm_levels','prs_levels',
+                          'rh_levels','rad_levels','pcp_levels'],
+            'var_str'  : ['wspd','wdir','temp','son_spd','son_dir','pres','rh','rad','prcp'],
+        }        
+    elif FINO==3:
+        var_dict = {
+            'name'     : ['Wind_Speed_','Wind_Direction_','Air_Temperature_',
+                          'Pressure_','Relative_humidity_','Surface_Termperature_AWAC',
+                          'Precipitation_','Global_radiation'],
+            'str_len'  : [23,27,21,14,23,26,18,17],
+            'indx_str' : ['spd_levels','dir_levels','tmp_levels','prs_levels','rh_levels','sst_levels',
+                          'pcp_levels','rad_levels'],
+            'var_str'  : ['wspd','wdir','temp','pres','rh','sst','prcp','rad'],
+        }
+    else:
+        print('Only FINO 1-3 are expected... ')
+        return
+    file_list = sorted(glob.glob('{}*/'.format(fdir)))
+    if FINO != 3: boom_deg = None
+    for nn,var_n in enumerate(var_dict['name']):
+        var_n   = var_n.lower()
+        levels  = []
+        f_names = []
+        for dd in file_list:
+            good_str = False
+            lvl_str = dd.replace(fdir,'').lower() 
+            if boom_deg == None or var_n != 'wind_speed_':
+                if var_n in dd.lower() and len(lvl_str) <= var_dict['str_len'][nn]:
+                    good_str = True
+            else:
+                if var_n in dd.lower() and len(lvl_str) <= var_dict['str_len'][nn] and str(boom_deg) in lvl_str:
+                    good_str = True
+            if good_str:
+                f_names.append(lvl_str)
+                split_str = lvl_str.replace('/','').split('_')
+                for ss in split_str:
+                    if ss[-1] == 'm' and len(ss) <=4:
+                        try: 
+                            levels.append(float(ss.replace('m','')))
+                        except:
+                            print(ss)
+                                
+        if levels == []: levels = [0.0]
+        n_levels = len(levels)
+
+        for vv,ff in enumerate(f_names):
+            empty_var = False
+            fname = glob.glob('{0}{1}/*.dat'.format(fdir,ff))[0]
+            try:
+                data = pd.read_csv(fname,header=6,delimiter='\t',
+                                   names=['datetime','value','min','max','var','qual'],
+                                   index_col='datetime',parse_dates=True)
+            except:
+                print('{} at {} m is empty... skipping.'.format(var_n,levels[vv]))
+                empty_var = True
+            if not empty_var: 
+                data = data.to_xarray().assign_coords({var_dict['indx_str'][nn]:levels[vv]}).expand_dims(
+                                                                                var_dict['indx_str'][nn])
+                data = data.where(data['value']>-999)
+                if nn == 0 and vv == 0: 
+                    full_data = data
+                else:
+                    full_data = full_data.combine_first(data)
+        try:
+            full_data = full_data.rename({'value':var_dict['var_str'][nn]}).drop(['min','max','var','qual'])
+        except:
+            print('no data for {}'.format(var_n))
+
+    return(full_data)        
+
+
+
