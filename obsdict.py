@@ -14,6 +14,7 @@ import subprocess
 import pandas as pd
 import glob
 import xarray as xr
+from os import path
 
 class m2data():
     def __init__(self,fd):
@@ -649,7 +650,7 @@ def read_AWOS(file_loc, weak_wind_dir_correction=True):
     f.close()
     return df
          
-def AWOS_to_ds(fdir,stn,year_range,lat,lon,onshore_min=None,onshore_max=None,saveds=False,set_vrb_wdir=True):
+def AWOS_to_ds(fdir,stn,year_range,lat,lon,onshore_min=None,onshore_max=None,saveds=False,set_vrb_wdir=True,fsave_str=None):
     print('starting {}'.format(stn))
     list_of_files = sorted(glob.glob('{}{}*'.format(fdir,stn)))
     for yy,year in enumerate(year_range):
@@ -760,4 +761,147 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
     return(full_data)        
 
 
+def read_ASOS_1min(file_loc, weak_wind_dir_correction=True):
+    '''
+    Read in 1-minute ASOS data from ftp://ftp.ncdc.noaa.gov/pub/data/asos-onemin/
+    '''
 
+    if '6405' in file_loc:
+        names = ['station', 'datetime', 'wdir', 'wspd', 'wdirg', 'wspdg']
+    elif '6406' in file_loc:
+        names = ['station', 'datetime', 'pcip', 'pamt','pres', 'temp', 'dwpt']
+
+    var_loc_dict = {  'station': [0,str],
+                     'datetime': [1,'datetime64'],
+                         'wdir': [-6,float],
+                         'wspd': [-5,float],
+                        'wdirg': [-4,float],
+                        'wspdg': [-3,float],
+                    
+                         'pcip': [2,str],
+                         'pamt': [3,float],
+                         'pres': [-3,float],
+                         'temp': [-2,float],
+                         'dwpt': [-1,float]
+                   }
+    
+
+    var_dict = {  'station': [],
+                 'datetime': [],
+                     'wdir': [],
+                     'wspd': [],
+                    'wdirg': [],
+                    'wspdg': [],
+                     'pcip': [],
+                     'pamt': [],
+                     'pres': [],
+                     'temp': [],
+                     'dwpt': []
+               }
+
+    f = open(file_loc,'r')
+    line_count = 0
+    for ll,line in enumerate(f):
+        line = line.replace('[',' ').replace(']',' ').replace('"',' ').replace("'",' ').replace(
+                                             '`',' ').replace('\\',' ')
+        line = line.split()
+        if len(line) > 5:
+            for dd,varn in enumerate(names):
+                var_dict[varn].append(line[var_loc_dict[varn][0]].strip())   
+                #print(len(var_dict[varn]))
+                if varn == 'datetime': 
+                    try:
+                        var_dict[varn][line_count] = datetime.strptime(var_dict[varn][line_count][3:17],
+                                                                       '%Y%m%d%H%M%S')
+                    except:
+                        print('bad value: {}'.format(var_dict[varn][line_count-1]))
+                        var_dict[varn][line_count-1] = pd.to_datetime('1800-01-01 00:00:00')
+                        print('replaced with: {}'.format(var_dict[varn][line_count-1]))
+                        wefwef
+            line_count += 1
+
+    f.close()
+
+    for dd,varn in enumerate(names):
+        dat = np.asarray(var_dict[varn])
+        dat[np.where(dat=='\\38   5')] = '999'
+        dat[np.where(dat=="r9'48")] = '999'
+        dat[np.where(dat=="`0'00")] = '999'
+        
+        goodvar = False
+        count=0
+        while goodvar == False:
+            count+=1
+            try: 
+                dat = np.asarray(dat,dtype=var_loc_dict[varn][1])
+                goodvar = True
+            except ValueError as err:
+                err_str = str(err.args[0].split(':')[-1].strip().replace("'",""))
+                dat[np.where(dat==err_str)] = '999'
+
+        var_dict[varn] = dat 
+        if var_loc_dict[varn][1] is float:
+            if np.shape(np.where(var_dict[varn]==999.0))[1] != 0:
+                var_dict[varn][np.where(var_dict[varn]==999.0)] = np.nan
+    vars_to_delete = []        
+    for varn in var_dict:
+        if varn not in names:
+            vars_to_delete.append(varn)
+    for varn in vars_to_delete:       
+        del var_dict[varn]
+
+    df = pd.DataFrame.from_dict(var_dict).set_index('datetime')
+    return(df)
+
+
+def ASOS_to_ds(fdir,stn,lat,lon,year_range=None,onshore_min=None,onshore_max=None,
+               saveds=False,set_vrb_wdir=True,fsave_str=None,asos_type='1min'):
+    file_list = sorted(glob.glob('{}*{}*.dat'.format(fdir,stn)))
+    for ff,fname in enumerate(file_list):
+        file_list[ff] = fname.replace('6405','{}').replace('6406','{}')
+    file_list = np.unique(file_list)
+    if year_range is not None:
+        new_file_list = []
+        for yy in year_range:
+            for ff in file_list:
+                if str(yy) in ff:
+                    new_file_list.append(ff)
+        file_list = new_file_list
+    if asos_type == '1min':
+        for ff,fname in enumerate(file_list):
+            print(fname)
+            got_6405,got_6406 = False,False
+            if path.exists(fname.format(6405)):
+                got_6405 = True
+            else:
+                print('missing 6405... filling with nan')
+            if path.exists(fname.format(6406)):
+                got_6406 = True
+            else:
+                print('missing 6406... filling with nan')
+
+            if got_6405:
+                df_6405 = read_ASOS_1min(fname.format(6405))
+            if got_6406:
+                df_6406 = read_ASOS_1min(fname.format(6406))
+            if got_6405 and got_6406:
+                df0 = pd.merge(df_6405,df_6406,how='outer',on=['datetime','station'])
+
+            if ff == 0:
+                df = df0
+            else:
+                df = pd.concat([df,df0])
+    elif asos_type == '5min':
+        for ff,fname in enumerate(file_list):
+            print(fname)
+            wefwef
+    ds = df.to_xarray() 
+    ds = ds.assign_coords({'station':stn[1:]}).expand_dims('station')
+    ds['lon'] = (['station'],[lon])
+    ds['lat'] = (['station'],[lat])
+    if onshore_min is not None: ds['onshore_min'] = (['station'],[onshore_min])
+    if onshore_max is not None: ds['onshore_max'] = (['station'],[onshore_max])
+    ds = ds.assign_coords({'lon':ds.lon, 'lat':ds.lat})
+    if saveds: ds.to_netcdf(fsave_str.format(fdir,stn,year_range[0],year_range[-1]))
+
+    return(ds)
