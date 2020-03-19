@@ -714,7 +714,7 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
         f_names = []
         for dd in file_list:
             good_str = False
-            lvl_str = dd.replace(fdir,'').lower() 
+            lvl_str = dd.replace(fdir,'')#.lower() 
             if boom_deg == None or var_n != 'wind_speed_':
                 if var_n in dd.lower() and len(lvl_str) <= var_dict['str_len'][nn]:
                     good_str = True
@@ -733,10 +733,10 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
                                 
         if levels == []: levels = [0.0]
         n_levels = len(levels)
-
+        
         for vv,ff in enumerate(f_names):
             empty_var = False
-            fname = glob.glob('{0}{1}/*.dat'.format(fdir,ff))[0]
+            fname = glob.glob('{0}{1}*.dat'.format(fdir,ff))[0]
             try:
                 data = pd.read_csv(fname,header=6,delimiter='\t',
                                    names=['datetime','value','min','max','var','qual'],
