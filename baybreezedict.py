@@ -15,6 +15,7 @@ import pandas as pd
 import glob
 import xarray as xr
 from collections import Counter
+from sklearn.linear_model import LinearRegression
 
 class DetectBayBreeze():
     def __init__(self, station, 
@@ -29,7 +30,7 @@ class DetectBayBreeze():
 
         if (inland is None) & (method != 'Stauffer2015'):
             raise ValueError('Must specify an inland station ("inland=") with this method.')
-            
+
         self.detected  = False
         self.validated = False
         self.analyzed  = False
@@ -111,7 +112,7 @@ class DetectBayBreeze():
 
             if len(np.squeeze(wspd_inpl.data)) > 1:
                 wspd_inpl.resample(datetime=sample_rate).interpolate('linear').plot(ax=ax[0],
-                                        marker='o',c='green',label=inland_stations.station.values[0])
+                                        marker='o',c='green',label=inland.station.values)
             if len(np.squeeze(wdir_inpl.data)) > 1:
                 wdir_inpl.resample(datetime=sample_rate).interpolate('linear').plot(ax=ax[1],
                                                                                     marker='o',c='darkgreen')
@@ -463,7 +464,7 @@ class DetectBayBreeze():
                     station_cld[vv] = 'OVC'
             station_cld = np.asarray(station_cld)
 
-            print('CLR: {}; OVC: {}'.format(
+            if verbose: print('CLR: {}; OVC: {}'.format(
                 len(np.where(station_cld == 'CLR')[0]),
                 len(np.where(station_cld == 'OVC')[0])))
             station_cld = xr.DataArray(station_cld,dims=['datetime'],coords=[station.datetime.values])
