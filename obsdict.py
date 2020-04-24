@@ -692,7 +692,7 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
             'str_len'  : [16,19,21,29,33,14,23,21,18],
             'indx_str' : ['spd_levels','dir_levels','tmp_levels','anm_levels','anm_levels','prs_levels',
                           'rh_levels','rad_levels','pcp_levels'],
-            'var_str'  : ['wspd','wdir','temp','son_spd','son_dir','pres','rh','rad','prcp'],
+            'var_str'  : ['wspd','wdir','temp','anm_spd','anm_dir','pres','rh','rad','prcp'],
         }        
     elif FINO==3:
         var_dict = {
@@ -710,7 +710,6 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
     file_list = sorted(glob.glob('{}*/'.format(fdir)))
     if FINO != 3: boom_deg = None
     for nn,var_n in enumerate(var_dict['name']):
-        print(var_n)
         var_n   = var_n.lower()
         levels  = []
         f_names = []
