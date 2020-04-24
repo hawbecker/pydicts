@@ -710,7 +710,6 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
     file_list = sorted(glob.glob('{}*/'.format(fdir)))
     if FINO != 3: boom_deg = None
     for nn,var_n in enumerate(var_dict['name']):
-        print(var_n)
         var_n   = var_n.lower()
         levels  = []
         f_names = []
