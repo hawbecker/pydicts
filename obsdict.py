@@ -678,11 +678,11 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
     if FINO==1:
         var_dict = {
             'name'     : ['Wind_Speed_','Wind_Direction_','Air_Temperature_','Surface_Temperature_Buoy',
-                          'Air_Pressure_','Precipitation_','Humidity_','Global_Radiation_'],
-            'str_len'  : [16,19,21,25,17,19,14,21],
+                          'Air_Pressure_','Precipitation_','Humidity_','Global_Radiation_','Wind_Speed_U_Anemometer_'],
+            'str_len'  : [16,19,21,25,17,19,14,21,28],
             'indx_str' : ['spd_levels','dir_levels','tmp_levels','sst_levels','prs_levels','pcp_levels',
-                          'rh_levels','rad_levels'],
-            'var_str'  : ['wspd','wdir','temp','sst','pres','prcp','rh','rad']
+                          'rh_levels','rad_levels','anm_levels'],
+            'var_str'  : ['wspd','wdir','temp','sst','pres','prcp','rh','rad','anm_spd']
         }
     elif FINO==2:
         var_dict = {
@@ -710,6 +710,7 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
     file_list = sorted(glob.glob('{}*/'.format(fdir)))
     if FINO != 3: boom_deg = None
     for nn,var_n in enumerate(var_dict['name']):
+        print(var_n)
         var_n   = var_n.lower()
         levels  = []
         f_names = []
