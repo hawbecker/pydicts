@@ -15,7 +15,147 @@ import pandas as pd
 import glob
 import xarray as xr
 from collections import Counter
-from sklearn.linear_model import LinearRegression
+#from sklearn.linear_model import LinearRegression
+import scipy.stats as stats
+from mmctools.helper_functions import calc_wind
+
+def spatial_breeze_check(onshore_min,
+                         onshore_max,
+                         wrfout,
+                         land_mask=None,
+                         dt_calc='vertical',
+                         wdir_check='vertical'):
+    
+    if land_mask is None:
+        land_mask = wrfout.LANDMASK
+    vel10,dir10 = calc_wind(wrfout,u='U10',v='V10')
+    vel10 = vel10.where(land_mask == 1.0)
+    dir10 = dir10.where(land_mask == 1.0)
+    nx = len(wrfout.west_east)
+    ny = len(wrfout.south_north) 
+    onshore_winds = dir10.where((dir10 >= onshore_min) & (dir10 <= onshore_max))
+    #onshore_winds /= onshore_winds
+    onshore_winds = onshore_winds.fillna(0.0)
+    
+    top_ind = 18
+    bot_ind = 0
+
+    dU = vel10.where(~np.isnan(onshore_min))
+    if wdir_check == 'smoothed':
+        smooth_dir = dir10.copy()
+        h_window = 15
+    elif wdir_check == 'vertical':
+        u = wrfout.U[top_ind,:,:].data
+        v = wrfout.V[top_ind,:,:].data
+
+        u = 0.5*(u[:,1:] + u[:,:-1])
+        v = 0.5*(v[1:,:] + v[:-1,:])
+        wdir1km = 180. + np.degrees(np.arctan2(u, v))
+
+    temp = np.squeeze(wrfout.T)
+    if dt_calc == 'vertical':
+        bb_temp = temp.copy().where(~np.isnan(onshore_min))
+        z_f = (np.squeeze(wrfout.PH) + np.squeeze(wrfout.PHB))/9.8 - np.squeeze(wrfout.HGT)
+        zs_f = 0.5*(z_f[1:,:,:]+z_f[:-1,:,:])   
+        dT = (bb_temp[top_ind,:,:] - bb_temp[bot_ind,:,:]) / (zs_f[top_ind,:,:] - zs_f[bot_ind,:,:])
+    elif dt_calc == 'horizontal':
+        t2 = wrfout.T2.where(land_mask == 1.0)
+        dT = t2.where(~np.isnan(onshore_min))
+
+    good_wind_dir = onshore_winds.copy()
+    window_start_i = min(np.where(~np.isnan(onshore_min))[1])
+    window_start_j = min(np.where(~np.isnan(onshore_min))[0])
+    for ii in np.arange(window_start_i,nx-window_start_i):
+        for jj in np.arange(window_start_j,ny-window_start_j):
+            
+            if ~np.isnan(dU[jj,ii]):
+                U_window = vel10[jj-1:jj+2,ii-1:ii+2].data.flatten()
+                dU_window = vel10[jj,ii].data - U_window
+                dU_window[np.where(dU_window<=0.0)] = np.nan
+                if np.count_nonzero(np.isnan(dU_window)) > 8:
+                    dU[jj,ii] = np.nan
+                else:
+                    dU[jj,ii] = np.nanmean(dU_window)
+                
+            if dt_calc == 'horizontal':
+                if ~np.isnan(dT[jj,ii]):
+                    T_window = t2[jj-1:jj+2,ii-1:ii+2].data.flatten()
+                    dT_window = t2[jj,ii].data - T_window
+                    dT_window[np.where(dT_window>=0.0)] = np.nan
+                    if np.count_nonzero(np.isnan(dT_window)) > 8:
+                        dT[jj,ii] = np.nan
+                    else:
+                        dT[jj,ii] = np.nanmean(dT_window)
+
+
+            if wdir_check == 'smoothed':
+                if ((ii >= h_window) & (jj >= h_window)) & ((ii <= nx-h_window) & (jj <= ny-h_window)):
+                    dir_window = dir10.data[jj-h_window:jj+h_window+1,ii-h_window:ii+h_window+1].copy()
+                    dir_window_range = np.nanmax(dir_window) - np.nanmin(dir_window)
+                    if dir_window_range > 300.0:
+                        #print(dir_window)
+                        if np.nanmedian(dir_window) < 180.0:
+                            dir_window[dir_window >= 270.0] -= 360.0
+                        else:
+                            dir_window[dir_window <= 90.0] += 360.0
+                    smooth_dir[jj,ii] = np.nanmean(dir_window)
+                else:
+                    smooth_dir[jj,ii] = np.nan
+            
+            if onshore_winds[jj,ii] > 0.0:
+                if wdir_check == 'smoothed':
+                    is_onshore = (smooth_dir[jj,ii] > onshore_min[jj,ii]) & (smooth_dir[jj,ii] < onshore_max[jj,ii])
+                    meso_wind  = smooth_dir[jj,ii]
+                else:
+                    is_onshore = (wdir1km[jj,ii] > onshore_min[jj,ii]) & (wdir1km[jj,ii] < onshore_max[jj,ii])
+                    meso_wind = wdir1km[jj,ii]
+                local_wind = dir10[jj,ii]
+                wind_diff = np.abs(meso_wind - local_wind)
+                if wind_diff > 200.0:
+                    if meso_wind > local_wind:
+                        local_wind += 360.0
+                    else:
+                        meso_wind += 360.0
+                    wind_diff = np.abs(meso_wind - local_wind)
+                is_different = wind_diff >= 30.0
+                if is_onshore and ~is_different:
+                    good_wind_dir[jj,ii] = 0.0
+    
+    
+    bay_breeze_area = good_wind_dir.copy()
+    bay_breeze_area_data = bay_breeze_area.where(land_mask==1.0).data
+    bay_breeze_area_data = bay_breeze_area_data*0.0
+    bay_breeze_area_data[good_wind_dir > 0.0] += 1.0
+    bay_breeze_area_data[dT >= 0.0001] += 1.0
+    bay_breeze_area_data[dU > 0.5] += 1.0
+    bay_breeze_area.data = bay_breeze_area_data 
+    
+    bay_breeze_detection_dict = {   'breeze':bay_breeze_area,
+                                 'good_wdir':good_wind_dir,
+                                        'dT':dT,
+                                        'dU':dU}
+    
+    
+    
+    for kk,key in enumerate(bay_breeze_detection_dict.keys()):
+        if key == 'breeze':
+            var = bay_breeze_detection_dict['good_wdir'].copy()
+            var.data = bay_breeze_detection_dict[key]
+        else:
+            var = bay_breeze_detection_dict[key]
+            var.name = key
+        if kk == 0:
+            ds = xr.Dataset({key: var})
+        else:
+            ds = xr.merge([ds,var])
+            
+    ds = ds.expand_dims('datetime')
+    dtime = ds.XTIME.expand_dims('datetime')
+    ds = ds.drop('XTIME')
+    ds['datetime'] = dtime
+    return(ds)
+
+
 
 class DetectBayBreeze():
     def __init__(self, station, 
@@ -368,7 +508,9 @@ class DetectBayBreeze():
             burst = False
         
         x = np.arange(0,len(wspd_after))
-        slope = LinearRegression().fit(x.reshape(-1, 1), wspd_after.data.reshape(-1, 1)).coef_[0][0]
+        slope = stats.linregress(x, wspd_after.data)[0]
+
+        #slope = LinearRegression().fit(x.reshape(-1, 1), wspd_after.data.reshape(-1, 1)).coef_[0][0]
         if slope > 0.0:
             wspd_increase = True
         else:
