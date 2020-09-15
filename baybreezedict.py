@@ -109,13 +109,25 @@ class DetectBayBreeze():
             wdir_inpl = inland.wdir.dropna(how='all',dim='datetime')
             wspd_plot.plot(ax=ax[0],marker='o',c='blue',label=str(station.station.values))
             wdir_plot.plot(ax=ax[1],marker='o',c='darkblue')
-
-            if len(np.squeeze(wspd_inpl.data)) > 1:
-                wspd_inpl.resample(datetime=sample_rate).interpolate('linear').plot(ax=ax[0],
-                                        marker='o',c='green',label=inland.station.values)
-            if len(np.squeeze(wdir_inpl.data)) > 1:
-                wdir_inpl.resample(datetime=sample_rate).interpolate('linear').plot(ax=ax[1],
-                                                                                    marker='o',c='darkgreen')
+            
+            try:
+                n_wspd_inpl = len(np.asarray(np.squeeze(wspd_inpl.data)))
+            except TypeError:
+                n_wspd_inpl = 1 
+            try:
+                n_wdir_inpl = len(np.asarray(np.squeeze(wdir_inpl.data)))
+            except TypeError:
+                n_wdir_inpl = 1
+                
+            if n_wspd_inpl > 1:
+                plt_data = wspd_inpl.resample(datetime=sample_rate).interpolate('linear')
+                if len(plt_data) > 1:
+                    plt_data.plot(ax=ax[0],marker='o',c='green',label=inland.station.values)
+            if n_wdir_inpl > 1:
+                plt_data = wdir_inpl.resample(datetime=sample_rate).interpolate('linear')
+                if len(plt_data) > 1:
+                    plt_data.plot(ax=ax[1],marker='o',c='darkgreen')
+                
             ax[0].fill_between([station.datetime.data[0],
                   station.datetime.data[-1]],0.0,light_winds,
                   color='grey',alpha=0.2,lw=0.0)
@@ -160,9 +172,16 @@ class DetectBayBreeze():
                 if len(third_plot.data) > 1:
                     third_plot.plot(ax=ax[2],marker='o',c='blue')
                     ax[2].set_ylim(np.min(third_plot)-1,np.max(third_plot)+1)
-                ax[2].fill_betweenx(np.arange(-50,50),pd.to_datetime(self.start.values),
-                        pd.to_datetime(self.end.values),alpha=0.1, color=fill_color)                
-                ax[2].axvline(pd.to_datetime(self.passage.values),c='k',ls=':',alpha=0.5)
+                #print(pd.to_datetime(self.start.values),pd.to_datetime(self.end.values))
+                try:
+                    ax[2].fill_betweenx(np.arange(-50,50),pd.to_datetime(self.start.values),
+                                        pd.to_datetime(self.end.values),alpha=0.1, color=fill_color) 
+                except:
+                    print('Unable to fill...')
+                try:
+                    ax[2].axvline(pd.to_datetime(self.passage.values),c='k',ls=':',alpha=0.5)
+                except:
+                    print('Unable to draw line...')
             plt.show()
 
 
