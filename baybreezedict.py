@@ -105,7 +105,10 @@ def spatial_breeze_check(onshore_min,
         v = 0.5*(v[1:,:] + v[:-1,:])
         wdir1km = 180. + np.degrees(np.arctan2(u, v))
         wdir_cutoff = np.nanpercentile(wdir1km - dir10,wdir_cutoff_pct)
-    dT_cutoff = np.max([0.0,np.nanpercentile(dT,dT_cutoff_pct)])
+        
+    wdir_cutoff = np.max([10.0,wdir_cutoff]) # Lower limit
+    wdir_cutoff = np.min([100.0,wdir_cutoff])# Upper limit
+    dT_cutoff = np.max([0.0,np.nanpercentile(dT,dT_cutoff_pct)]) # Lower limit
 
 
     good_wind_dir = onshore_winds.copy()
@@ -153,8 +156,12 @@ def spatial_breeze_check(onshore_min,
     bay_breeze_area_data = bay_breeze_area.where(land_mask==1.0).data
     bay_breeze_area_data = bay_breeze_area_data*0.0
     bay_breeze_area_data[good_wind_dir > 0.0] += 1.0
+    # If we only care about areas where the wind shifts and dT / dU are secondary...
+    dT = dT.where(good_wind_dir > 0).fillna(-999.9)
+    dU = dU.where(good_wind_dir > 0).fillna(-999.9)
+
     bay_breeze_area_data[dT >= dT_cutoff] += 1.0
-    bay_breeze_area_data[dU > 0.5] += 1.0
+    #bay_breeze_area_data[dU > 0.5] += 1.0
     bay_breeze_area.data = bay_breeze_area_data 
     
     bay_breeze_detection_dict = {   'breeze':bay_breeze_area,
