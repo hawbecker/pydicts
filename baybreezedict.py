@@ -277,15 +277,20 @@ class DetectBayBreeze():
                 fig,ax = plt.subplots(nrows=3,sharex=True,figsize=(8,8))
             else:
                 fig,ax = plt.subplots(nrows=2,sharex=True,figsize=(8,5))
-                
-            wspd_plot = station.wspd.dropna(how='all',dim='datetime').resample(
-                                        datetime=sample_rate).interpolate('linear')
-            wdir_plot = station.wdir.dropna(how='all',dim='datetime').resample(
-                                        datetime=sample_rate).interpolate('linear')
+            
+            if len(station.wspd.dropna(how='all',dim='datetime')) > 1:
+                wspd_plot = station.wspd.dropna(how='all',dim='datetime').resample(
+                                            datetime=sample_rate).interpolate('linear')
+                wspd_plot.plot(ax=ax[0],marker='o',c='blue',label=str(station.station.values))
+                station.wspd.plot(ax=ax[0],marker='o',c='blue',alpha=0.3)
+            if len(station.wdir.dropna(how='all',dim='datetime')) > 1:
+                wdir_plot = station.wdir.dropna(how='all',dim='datetime').resample(
+                                            datetime=sample_rate).interpolate('linear')
+                wdir_plot.plot(ax=ax[1],marker='o',c='darkblue')
+                station.wdir.plot(ax=ax[1],marker='o',c='darkblue',alpha=0.3)
+            
             wspd_inpl = inland.wspd.dropna(how='all',dim='datetime')
             wdir_inpl = inland.wdir.dropna(how='all',dim='datetime')
-            wspd_plot.plot(ax=ax[0],marker='o',c='blue',label=str(station.station.values))
-            wdir_plot.plot(ax=ax[1],marker='o',c='darkblue')
             
             try:
                 n_wspd_inpl = len(np.asarray(np.squeeze(wspd_inpl.data)))
@@ -300,10 +305,12 @@ class DetectBayBreeze():
                 plt_data = wspd_inpl.resample(datetime=sample_rate).interpolate('linear')
                 if len(plt_data) > 1:
                     plt_data.plot(ax=ax[0],marker='o',c='green',label=inland.station.values)
+                    wspd_inpl.plot(ax=ax[0],marker='o',c='green',alpha=0.3)
             if n_wdir_inpl > 1:
                 plt_data = wdir_inpl.resample(datetime=sample_rate).interpolate('linear')
                 if len(plt_data) > 1:
                     plt_data.plot(ax=ax[1],marker='o',c='darkgreen')
+                    wdir_inpl.plot(ax=ax[1],marker='o',c='darkgreen',alpha=0.3)
                 
             ax[0].fill_between([station.datetime.data[0],
                   station.datetime.data[-1]],0.0,light_winds,
@@ -312,20 +319,23 @@ class DetectBayBreeze():
                   station.datetime.data[-1]],float(station.onshore_min.values),
                   float(station.onshore_max.values),color='grey',alpha=0.2,lw=0.0)
             ax[0].legend(frameon=False)
-            ax[0].axvline(pd.to_datetime(self.passage.values),c='k',ls=':',alpha=0.5)
-            ax[1].axvline(pd.to_datetime(self.passage.values),c='k',ls=':',alpha=0.5)
+            if self.detected:
+                ax[0].axvline(pd.to_datetime(self.passage.values),c='k',ls=':',alpha=0.5)
+                ax[1].axvline(pd.to_datetime(self.passage.values),c='k',ls=':',alpha=0.5)
             ax[1].set_xlim(station.datetime.data[0],station.datetime.data[-1])
             ax[0].set_ylim(0,15)
             ax[1].set_ylim(0,360)
-            if self.validated:
-                fill_color = 'darkgreen'
-            else:
-                fill_color = 'darkred'
-            ax[0].fill_betweenx(np.arange(0,100),pd.to_datetime(self.start.values),
-                    pd.to_datetime(self.end.values),alpha=0.1, color=fill_color)
-            ax[1].fill_betweenx(np.arange(0,360),pd.to_datetime(self.start.values),
-                    pd.to_datetime(self.end.values),alpha=0.1, color=fill_color)
             
+            if self.detected:
+                if self.validated:
+                    fill_color = 'darkgreen'
+                else:
+                    fill_color = 'darkred'
+                ax[0].fill_betweenx(np.arange(0,100),pd.to_datetime(self.start.values),
+                        pd.to_datetime(self.end.values),alpha=0.1, color=fill_color)
+                ax[1].fill_betweenx(np.arange(0,360),pd.to_datetime(self.start.values),
+                        pd.to_datetime(self.end.values),alpha=0.1, color=fill_color)
+
             if method != 'StaufferThompson2015':
                 if method == 'Stauffer2015':  
                     third_plot = station.dwpt.sel(datetime=slice(self.start,self.end)).dropna(
@@ -377,11 +387,11 @@ class DetectBayBreeze():
         wdir = station.wdir.dropna(dim='datetime',how='all').resample(datetime=sample_rate).interpolate('linear')
 
         is_offshore = (wdir>station.onshore_max) | (wdir<station.onshore_min) & (wdir <= 360.0)
-        is_light    = ((wspd<light_winds) & (wdir > 360.0)) | (wspd < 1.0)
+        is_light    = ((wspd<light_winds) & (wdir > 360.0)) | (wspd < light_winds)
         # Condition 1: Offshore winds, light and variable or calm (less than light_winds)
         offshore_conditions = is_light | is_offshore
         is_onshore  = ~is_offshore
-        is_greater_than_0 = wspd > light_winds
+        is_greater_than_0 = wspd > 0.0
         onshore_conditions = is_onshore & is_greater_than_0
         if verbose:
             print('Offshore conditions met: {}'.format(np.any(offshore_conditions).data))
@@ -395,8 +405,28 @@ class DetectBayBreeze():
         if np.any(offshore_conditions) and np.any(onshore_conditions):
             offshore = ['']*wdir.size
             onshore  = ['']*wdir.size
+            off_lbl = 'a'
+            on_lbl  = 'a'
             lbl = 'a'
             offshore_flag = False
+            onshore_flag  = False
+            for ii in range(0,wdir.size):
+                if offshore_conditions[ii]:
+                    offshore_flag = True
+                    offshore[ii] = off_lbl
+                    if onshore_flag == True:
+                        onshore_flag = False
+                        on_lbl = chr(ord(on_lbl)+1)
+                else:
+                    if onshore_flag == False:
+                        off_lbl = chr(ord(off_lbl)+1)
+                        onshore_flag = True
+                        onshore[ii] = on_lbl
+                    else:
+                        offshore_flag = False
+                        onshore[ii] = on_lbl
+                                            
+            '''
             for ii in range(1,wdir.size):
                 if offshore_conditions[ii-1]:
                     if offshore_conditions[ii]:
@@ -410,6 +440,7 @@ class DetectBayBreeze():
                     elif offshore_conditions[ii]:
                         lbl = chr(ord(lbl)+1)
                         offshore[ii] = lbl
+            '''
             if verbose:
                 for ll in zip(offshore,onshore):
                     print(ll)
@@ -427,7 +458,6 @@ class DetectBayBreeze():
                         offshore_inds = np.where(np.asarray(offshore)==lbl)[0]
                         offshore_s    = offshore_inds[0]
                         offshore_e    = offshore_inds[-1]
-
                         onshore_inds  = np.where(np.asarray(onshore)==lbl)[0]
                         onshore_s     = onshore_inds[0]
                         onshore_e     = onshore_inds[-1]
@@ -448,7 +478,7 @@ class DetectBayBreeze():
                             onshore_time = np.timedelta64(onshore_end-onshore_start,'m') / np.timedelta64(1, 'h')
                     if verbose: print('Label {} offshore: {} hours'.format(lbl,offshore_time))
                     if verbose: print('Label {} onshore:  {} hours'.format(lbl,onshore_time))
-                    if offshore_time >= 1.0 and onshore_time >= 2.0:
+                    if offshore_time >= 0.0 and onshore_time >= 2.0:
                         bay_breeze_start = wdir.datetime[np.where(np.asarray(offshore)==lbl)[0][0]]
                         bay_breeze_pass  = wdir.datetime[np.where(np.asarray(onshore)==lbl)[0][0]]
                         bay_breeze_end   = wdir.datetime[np.where(np.asarray(onshore)==lbl)[0][-1]]
@@ -471,33 +501,35 @@ class DetectBayBreeze():
                            sample_rate = '60min',
                            show_plot   = False, 
                            verbose     = False):
-        dwpt = station.dwpt.sel(datetime=slice(self.start,self.end)).dropna(
-                                dim='datetime',how='all')
-        try:
-            dwpt_len = len(np.squeeze(dwpt.data))
-        except:
-            dwpt_len = len(dwpt.data)
-
-        if dwpt_len > 1:
-            dwpt = dwpt.resample(datetime=sample_rate).interpolate('linear')
+        if len(station.dwpt.sel(datetime=slice(self.start,self.end)).dropna(dim='datetime',how='all')) > 1:
+            dwpt = station.dwpt.sel(datetime=slice(self.start,self.end)).dropna(
+                                    dim='datetime',how='all').resample(datetime=sample_rate).interpolate('linear')
             try:
-                dwpt_before = np.nanmin(dwpt.sel(datetime=slice(self.passage - pd.Timedelta(0.5,'h'),
-                                                                self.passage)).data)
+                dwpt_len = len(np.squeeze(dwpt.data))
             except:
-                dwpt_before = 999.9
-            try:
-                dwpt_after  = np.nanmax(dwpt.sel(datetime=slice(self.passage,
-                                                                self.passage + pd.Timedelta(1.0,'h'))).data)
-            except:
-                dwpt_after = -999.9
+                dwpt_len = len(dwpt.data)
 
-            if dwpt_before - dwpt_after <= -1.0:
-                self.dwpt_change = True
+            if dwpt_len > 1:
+                try:
+                    dwpt_before = np.nanmin(dwpt.sel(datetime=slice(self.passage - pd.Timedelta(1.0,'h'),
+                                                                    self.passage)).data)
+                except:
+                    dwpt_before = 999.9
+                try:
+                    dwpt_after  = np.nanmax(dwpt.sel(datetime=slice(self.passage,
+                                                                    self.passage + pd.Timedelta(1.0,'h'))).data)
+                except:
+                    dwpt_after = -999.9
+
+                if dwpt_before - dwpt_after <= -1.0:
+                    self.dwpt_change = True
+                else:
+                    self.dwpt_change = False
+                if verbose: print('Increase in dewpoint over 1˚C: {}'.format(self.dwpt_change))
             else:
                 self.dwpt_change = False
-            if verbose: print('Increase in dewpoint over 1˚C: {}'.format(self.dwpt_change))
         else:
-            self.dwpt_change = False
+            self.dwpt_change = False                
 
             
             
@@ -513,24 +545,24 @@ class DetectBayBreeze():
             temp_len = len(np.squeeze(temp.data))
         except:
             temp_len = len(temp.data)
-
         if temp_len > 1:
             temp = temp.resample(datetime=sample_rate).interpolate('linear')
             try:
-                temp_before = temp.sel(datetime=slice(self.passage - pd.Timedelta(0.5,'h'),
-                                                      self.passage - pd.Timedelta(1,'m'))).data[-1]
+                temp_before = temp.sel(datetime=slice(self.passage - pd.Timedelta(sample_rate),
+                                                      self.passage)).data
+                change_before = temp_before[1] - temp_before[0]
             except:
-                temp_before = -999.9
+                change_before = -999.9
             try:
-                temp_after  = temp.sel(datetime=slice(self.passage,self.passage + pd.Timedelta(1.0,'h'))).data[1]
+                temp_after  = temp.sel(datetime=slice(self.passage,self.passage + pd.Timedelta(sample_rate))).data
+                change_after  = temp_after[1] - temp_after[0]
             except:
-                temp_after = 999.9
-
-            if temp_before - temp_after >= 0.0:
+                change_after = 999.9
+            if change_before - change_after >= 0.0:
                 self.temp_change = True
             else:
                 self.temp_change = False
-            if verbose: print('Increase in dewpoint over 1˚C: {}'.format(self.temp_change))
+            if verbose: print('Leveling or drop in dry bulb: {}'.format(self.temp_change))
         else:
             self.temp_change = False
     
@@ -555,7 +587,7 @@ class DetectBayBreeze():
                      show_plot   = False, 
                      verbose     = False):
         wspd = station.wspd.dropna(dim='datetime',how='all').resample(datetime=sample_rate).interpolate('linear')
-        wspd_before = wspd.sel(datetime=slice(self.passage - pd.Timedelta(0.5,'h'),self.passage)).data[-2]
+        wspd_before = np.nanmin(wspd.sel(datetime=slice(self.passage - pd.Timedelta(1.0,'h'),self.passage)).data)
         wspd_after  = wspd.sel(datetime=slice(self.passage,self.passage + pd.Timedelta(1.0,'h')))
         wspd_gust   = np.max(wspd.sel(datetime=slice(self.passage,self.passage + pd.Timedelta(0.5,'h'))).data)
         if wspd_gust > wspd_before:
@@ -688,14 +720,14 @@ class DetectBayBreeze():
         nobs = 0
         # Cloud cover is reported in terms of 1/8th of sky cover with 1-2/8th being FEW,...
         # ...3-4/8ths being SCT, 5-7/8th being BKN and 8/8 denoted at OVC
-        cloud_val = {'CLR': 0.0, 'FEW': 1.5, 'SCT': 3.5, 'BKN': 6.0, 'OVC': 8.0}
+        cloud_val = {'nan': 0.0, 'CLR': 0.0, 'FEW': 1.5, 'SCT': 3.5, 'BKN': 6.0, 'OVC': 8.0}
         for ctype in ctype_count.keys():
-            if ctype != '' and ctype != 'nan' and ctype != ' ' and ctype !='A7:':
+            if ctype != '' and ctype != ' ' and ctype !='A7:': #and ctype != 'nan' :
                 cloud_sum += ctype_count[ctype]*cloud_val[ctype]
                 nobs += ctype_count[ctype]
             if verbose: print(ctype,ctype_count[ctype])
         if nobs == 0: 
-            cloudy_skies = True
+            cloudy_skies = False
         else:
             avg_cloud = cloud_sum/nobs
             for cloud, val in cloud_val.items():
@@ -723,20 +755,53 @@ class DetectBayBreeze():
         wdir = inland.wdir.dropna(dim='datetime',how='all').resample(datetime=sample_rate).interpolate('linear')
         
         wspd = wspd.sel(datetime=slice(self.passage,self.end))
-        wdir = wdir.sel(datetime=slice(self.passage,self.passage+pd.Timedelta(1.5,'h')))
-
+        #wdir = wdir.sel(datetime=slice(self.passage,self.passage+pd.Timedelta(1.5,'h')))
+        wdir = wdir.sel(datetime=slice(self.passage,self.end))
+        
         is_offshore = (wdir>station.onshore_max) | (wdir<station.onshore_min) & (wdir <= 360.0)
         is_onshore  = ~is_offshore
+        max_off = 0.0
+        off_flag = False
+        for off_val in is_offshore:
+            if off_val.data:
+                if off_flag == False:
+                    off_flag = True
+                    off_start = off_val.datetime
+                    off_end = off_val.datetime
+                else:
+                    off_end = off_val.datetime
+                    time_off = (off_end.data - off_start.data)/np.timedelta64(1,'h')
+                    if time_off > max_off: max_off = time_off
+            else:
+                if off_flag:
+                    off_end = off_val.datetime
+                    time_off = (off_end.data - off_start.data)/np.timedelta64(1,'h')
+                    if time_off > max_off: max_off = time_off
+                    off_flag = False
+        if verbose: print('max_off',max_off)
         any_onshore = np.any(is_onshore.data)
+        
         if method == 'StaufferThompson2015':
             inland_winds_with_onshore = np.squeeze(wspd.data)[np.where(np.squeeze(is_onshore.data))]
             weak_winds = np.all(inland_winds_with_onshore <= light_winds)
+            any_onshore = max_off < 2.0
             if (not any_onshore) or weak_winds: 
                 self.onshore_inland = False
             else:
                 self.onshore_inland = True
         else:
-            self.onshore_inland = any_onshore
+            weak_winds = 'N/A'
+            onshore_count = 0
+            if any_onshore:
+                for vv in np.squeeze(is_onshore.data):
+                    if vv: onshore_count += 1
+                if 100.0*(onshore_count/len(np.squeeze(is_onshore.data))) < 25.0:
+                    self.onshore_inland = False
+                else:
+                    self.onshore_inland = True
+            else:
+                self.onshore_inland = False
+            #self.onshore_inland = any_onshore
 
         onshore_count = 0
         if any_onshore:
@@ -745,6 +810,7 @@ class DetectBayBreeze():
             
         if verbose:
             print('Inland wind direction is onshore: {}'.format(any_onshore))
+            print('Inland wind speed is weak: {}'.format(weak_winds))
             if np.any(is_onshore.data):
                 print('Number of onshore measurements: {0} out of {1} ({2:2.2f}%)'.format(
                        onshore_count,len(np.squeeze(is_onshore.data)),
