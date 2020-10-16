@@ -203,14 +203,16 @@ class DetectBayBreeze():
                  show_plot   = False, 
                  method      = 'StaufferThompson2015',
                  min_points  = 3,
-                 verbose     = False):
+                 verbose     = False,
+                 remove_cldORprecip = False):
 
         if (inland is None) & (method != 'Stauffer2015'):
             raise ValueError('Must specify an inland station ("inland=") with this method.')
 
-        self.detected  = False
-        self.validated = False
-        self.analyzed  = False
+        self.detected     = False
+        self.validated    = False
+        self.analyzed     = False
+        self.cldsORprecip = False
         
         num_station_pts = np.min([station.wspd.dropna(dim='datetime',how='any').size,
                                  station.wdir.dropna(dim='datetime',how='any').size])
@@ -248,7 +250,7 @@ class DetectBayBreeze():
                         if (num_inland_pts >= min_points):
                             self._inland_compare(station,inland,resample=resample,sample_rate=sample_rate,
                                                 show_plot=show_plot,verbose=verbose,method=method)
-                            print('onshore inland: {}'.format(self.onshore_inland))
+                            if verbose: print('onshore inland: {}'.format(self.onshore_inland))
                             if (not self.onshore_inland):
                                 print('bay breeze validated for {}/{}/{}'.format(
                                        case_date.month,case_date.day,case_date.year))
@@ -260,8 +262,18 @@ class DetectBayBreeze():
                                         show_plot=show_plot,verbose=verbose,method=method)
                     self._detect_clouds(station,resample=resample,sample_rate=sample_rate,
                                         show_plot=show_plot,verbose=verbose,method=method)
-                                                
-                    if (self.wind_shift) & (not self.measured_precip) & (not self.clouds_detected):
+                    self.cldsORprecip =  not (not self.measured_precip) and (not self.clouds_detected)
+                    if verbose:
+                        print('clouds: ',self.clouds_detected)
+                        print('precip: ',self.measured_precip)
+                        print('Clouds or precip for {}/{}/{}: {}'.format(
+                                           case_date.month,case_date.day,case_date.year,self.cldsORprecip))
+                    if remove_cldORprecip:
+                        move_to_validate = self.wind_shift & (not self.cldsORprecip)
+                    else:
+                        move_to_validate = self.wind_shift
+                        
+                    if move_to_validate:                        
                         if verbose: print('bay breeze day')
                         self.detected  = True
                         if (num_inland_pts >= min_points):
@@ -270,7 +282,10 @@ class DetectBayBreeze():
                             if not self.onshore_inland:
                                 print('bay breeze validated for {}/{}/{}'.format(
                                        case_date.month,case_date.day,case_date.year))
-                                self.validated = True                        
+                                self.validated = True
+                            else:
+                                print('Inland check failed for {}/{}/{}'.format(
+                                       case_date.month,case_date.day,case_date.year))
                         
         if (show_plot) & (self.detected):
             if method != 'StaufferThompson2015':
@@ -638,17 +653,22 @@ class DetectBayBreeze():
         elif ('rainc' in var_names) and ('rainnc' in var_names):
             rainc  = np.squeeze(station.rainc.data)
             rainnc = np.squeeze(station.rainnc.data)
-            tot_rain = (rainc[1:] - rainc[:-1]) + (rainnc[1:] - rainnc[:-1])
-            tot_rain = np.concatenate([np.asarray([0.0]),tot_rain])
 
+            tot_rain = (rainc - rainc[0]) + (rainnc - rainnc[0])
+            #tot_rain = (rainc[1:] - rainc[:-1]) + (rainnc[1:] - rainnc[:-1])
+            #tot_rain = np.concatenate([np.asarray([0.0]),tot_rain])
+            tot_rain[np.where(tot_rain < 0.25)] = tot_rain[np.where(tot_rain < 0.25)]*0.0
             station_pcp = xr.DataArray(tot_rain,dims=['datetime'],coords=[station.datetime.values])
             station_pcp = station_pcp.dropna(dim='datetime',how='any')        
+
 #        station_pcp = station_pcp.dropna(dim='datetime',how='all').resample(
 #                                         datetime=sample_rate).interpolate('linear')
         station_pcp = station_pcp.fillna(value=0.0).resample(datetime=sample_rate).interpolate('linear')
+
         if method == 'Sikora2010':
             station_pcp = station_pcp.sel(datetime=slice(self.passage - pd.Timedelta(6,'h'),
                                                          self.passage))
+
         if len(station_pcp.values) > 0:
             total_precip = np.sum(station_pcp.values)
         else:
