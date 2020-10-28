@@ -18,28 +18,51 @@ from collections import Counter
 #from sklearn.linear_model import LinearRegression
 import scipy.stats as stats
 from mmctools.helper_functions import calc_wind
+from sklearn.linear_model import LinearRegression
+import skimage.morphology
 
 def spatial_breeze_check(onshore_min,
                          onshore_max,
-                         wrfout,
+                         out_file,
                          land_mask=None,
                          dT_calc='vertical',
                          dT_cutoff_pct=75,
                          wdir_check='vertical',
-                         wdir_cutoff_pct=80):
+                         wdir_cutoff_pct=80,
+                         model='WRF',
+                         top_ind = 18):
     
-    if land_mask is None:
-        land_mask = wrfout.LANDMASK
-    vel10,dir10 = calc_wind(wrfout,u='U10',v='V10')
+    if model == 'WRF':
+        if land_mask is None: land_mask = out_file.LANDMASK
+        t2   = out_file.T2.where(land_mask == 1.0)
+        u10  = out_file.U10.where(land_mask == 1.0)
+        v10  = out_file.V10.where(land_mask == 1.0)
+        sfcP = out_file.PSFC.where(land_mask == 1.0)
+        dx   = out_file.DX/1000.0
+        dy   = out_file.DY/1000.0
+    elif model == 'HRRR':
+        if land_mask is None: land_mask  = out_file.LAND_P0_L1_GLC0
+        t2   = out_file.TMP_P0_L103_GLC0.where(land_mask == 1.0)
+        u10  = out_file.UGRD_P0_L103_GLC0.sel(lv_HTGL2=10.0)
+        v10  = out_file.VGRD_P0_L103_GLC0.sel(lv_HTGL2=10.0)
+        sfcP = out_file.PRES_P0_L1_GLC0.where(land_mask == 1.0)
+        dx,dy = 3.0,3.0
+        
+
+    vel10 = (u10**2 + v10**2)**0.5
+    dir10 = 180. + np.degrees(np.arctan2(u10, v10))
+
     vel10 = vel10.where(land_mask == 1.0)
     dir10 = dir10.where(land_mask == 1.0)
-    nx = len(wrfout.west_east)
-    ny = len(wrfout.south_north) 
+    nx,ny = np.shape(land_mask)
+    x = np.arange(0,nx)*dx
+    y = np.arange(0,nx)*dy
+    xy,yx = np.meshgrid(x,y)
+
     onshore_winds = dir10.where((dir10 >= onshore_min) & (dir10 <= onshore_max))
     #onshore_winds /= onshore_winds
     onshore_winds = onshore_winds.fillna(0.0)
     
-    top_ind = 18
     bot_ind = 0
     if (wdir_check != 'vertical') & (wdir_check != 'smoothed'):
         print('wdir_check must be vertical or smoothed... defaulting to vertical')
@@ -47,19 +70,31 @@ def spatial_breeze_check(onshore_min,
     dU = vel10.where(~np.isnan(onshore_min))
     if wdir_check == 'smoothed':
         smooth_dir = dir10.copy()
-        h_window = 25
         
-    temp = np.squeeze(wrfout.T)
     if dT_calc == 'vertical':
-        bb_temp = temp.copy().where(~np.isnan(onshore_min))
-        z_f = (np.squeeze(wrfout.PH) + np.squeeze(wrfout.PHB))/9.8 - np.squeeze(wrfout.HGT)
-        zs_f = 0.5*(z_f[1:,:,:]+z_f[:-1,:,:])   
-        dT = (bb_temp[top_ind,:,:] - bb_temp[bot_ind,:,:]) / (zs_f[top_ind,:,:] - zs_f[bot_ind,:,:])
+        if model == 'WRF': 
+            temp = np.squeeze(out_file.T)
+            bb_temp = temp.copy().where(land_mask==1.0)
+            z_f = (np.squeeze(out_file.PH) + np.squeeze(out_file.PHB))/9.8 - np.squeeze(out_file.HGT)
+            zs_f = 0.5*(z_f[1:,:,:]+z_f[:-1,:,:])
+            z_top = zs_f[top_ind,:,:]
+            z_bot = zs_f[bot_ind,:,:]
+            bb_temp_top = bb_temp[top_ind,:,:]
+            bb_temp_bot = bb_temp[bot_ind,:,:]
+        elif model == 'HRRR':
+            z_top = out_file.HGT_P0_L100_GLC0.sel(lv_ISBL5=85000.0)
+            z_bot = 2.0
+            bb_temp_top = out_file.TMP_P0_L100_GLC0.where(land_mask==1.0).sel(lv_ISBL0=92500.0)*((1000.0/925.0)**0.286)
+            bb_temp_bot = out_file.POT_P0_L103_GLC0.where(land_mask==1.0) # 2m Pot. Temp.
+            
+
+        dT = (bb_temp_top - bb_temp_bot) / (z_top - z_bot)
     elif dT_calc == 'horizontal':
-        t2 = wrfout.T2.where(land_mask == 1.0)
         dT = t2.where(~np.isnan(onshore_min))
         
-        
+    window_start_i = min(np.where(~np.isnan(onshore_min))[1])
+    window_start_j = min(np.where(~np.isnan(onshore_min))[0])
+    h_window = np.round(window_start_i/2)
         
     if (wdir_check == 'smoothed') or (dT_calc == 'horizontal'):
         for ii in np.arange(window_start_i,nx-window_start_i):
@@ -92,29 +127,29 @@ def spatial_breeze_check(onshore_min,
                         else:
                             dT[jj,ii] = np.nanmean(dT_window)
 
-
-
-        
+    dT_full = dT.copy()
+    
     if wdir_check == 'smoothed':        
         wdir_cutoff = np.nanpercentile(smooth_dir - dir10,wdir_cutoff_pct)
     else: # wdir_check == 'vertical'
-        u = wrfout.U[top_ind,:,:].data
-        v = wrfout.V[top_ind,:,:].data
+        if model == 'WRF': 
+            u = out_file.U[top_ind,:,:].data
+            v = out_file.V[top_ind,:,:].data
+            u_top = 0.5*(u[:,1:] + u[:,:-1])
+            v_top = 0.5*(v[1:,:] + v[:-1,:])
+        elif model == 'HRRR':
+            u_top = out_file.UGRD_P0_L100_GLC0.sel(lv_ISBL1=85000.0)
+            v_top = out_file.VGRD_P0_L100_GLC0.sel(lv_ISBL1=85000.0)
 
-        u = 0.5*(u[:,1:] + u[:,:-1])
-        v = 0.5*(v[1:,:] + v[:-1,:])
-        wdir1km = 180. + np.degrees(np.arctan2(u, v))
+        wdir1km = 180. + np.degrees(np.arctan2(u_top, v_top))
         wdir_cutoff = np.nanpercentile(wdir1km - dir10,wdir_cutoff_pct)
         
     wdir_cutoff = np.max([10.0,wdir_cutoff]) # Lower limit
     wdir_cutoff = np.min([100.0,wdir_cutoff])# Upper limit
-    dT_cutoff = np.max([0.0,np.nanpercentile(dT,dT_cutoff_pct)]) # Lower limit
-
 
     good_wind_dir = onshore_winds.copy()
     diff_wind_dir = onshore_winds.copy()
-    window_start_i = min(np.where(~np.isnan(onshore_min))[1])
-    window_start_j = min(np.where(~np.isnan(onshore_min))[0])
+
     for ii in np.arange(window_start_i,nx-window_start_i):
         for jj in np.arange(window_start_j,ny-window_start_j):
             
@@ -156,10 +191,48 @@ def spatial_breeze_check(onshore_min,
     bay_breeze_area_data = bay_breeze_area.where(land_mask==1.0).data
     bay_breeze_area_data = bay_breeze_area_data*0.0
     bay_breeze_area_data[good_wind_dir > 0.0] += 1.0
-    # If we only care about areas where the wind shifts and dT / dU are secondary...
-    dT = dT.where(good_wind_dir > 0).fillna(-999.9)
+    
+    near_shore_dT = dT.where(~np.isnan(onshore_min))
+    if model == 'WRF':
+        inland_dT = dT.where(np.isnan(onshore_min) & (land_mask == 1)).sel(south_north=slice(window_start_j,ny - window_start_j),
+                                                                             west_east=slice(window_start_i,ny - window_start_i))
+    elif model == 'HRRR':
+        inland_dT = dT.where(np.isnan(onshore_min) & (land_mask == 1)).sel(ygrid_0=slice(window_start_j,ny - window_start_j),
+                                                                           xgrid_0=slice(window_start_i,ny - window_start_i))
+        
+    print('mean near shore: {}\ninland: {}'.format(
+            np.nanmean(near_shore_dT),
+            np.nanmean(inland_dT)))
+    print('pct near shore: {}\ninland: {}'.format(
+            np.nanpercentile(near_shore_dT,dT_cutoff_pct),
+            np.nanpercentile(inland_dT,dT_cutoff_pct)))
+    
+    if (np.nanpercentile(dT,dT_cutoff_pct) > 0.0):
+        print('Whole domain is stable.. checking near shore')
+        
+        if (np.nanpercentile(near_shore_dT,dT_cutoff_pct) > 0.0):
+            print('Near shore also stable...')
+            dT_cutoff = np.nan
+        else:
+            print('Near shore not stable. Finding dT_cutoff for just this region.')
+            dT_cutoff = np.max([0.0,np.nanpercentile(near_shore_dT,dT_cutoff_pct)])
+    else:
+        print('Whole domain is neutral or convective. Calculating dT_cutoff over whole domain.')
+        dT_cutoff = np.max([0.0,np.nanpercentile(dT,dT_cutoff_pct)])
+        
+        #if (np.nanpercentile(inland_dT,dT_cutoff_pct) > np.nanpercentile(near_shore_dT,dT_cutoff_pct)):
+        #    dT_cutoff = np.max([0.0,np.nanpercentile(near_shore_dT,dT_cutoff_pct)])
+        
+        #dT_cutoff = np.max([0.0,
+        #                    np.nanpercentile(inland_dT,dT_cutoff_pct),
+        #                    np.nanpercentile(near_shore_dT,dT_cutoff_pct)]) # Lower limit
+    print('cutoff all: {}'.format(dT_cutoff))
+
+
+    dT = dT.where(good_wind_dir > 0)#.fillna(-999.9)
     dU = dU.where(good_wind_dir > 0).fillna(-999.9)
 
+    dT = dT.fillna(-999.9)
     bay_breeze_area_data[dT >= dT_cutoff] += 1.0
     #bay_breeze_area_data[dU > 0.5] += 1.0
     bay_breeze_area.data = bay_breeze_area_data 
@@ -167,6 +240,7 @@ def spatial_breeze_check(onshore_min,
     bay_breeze_detection_dict = {   'breeze':bay_breeze_area,
                                  'good_wdir':good_wind_dir,
                                         'dT':dT,
+                                   'dT_full':dT_full,
                                         'dU':dU}
     
     
@@ -186,8 +260,11 @@ def spatial_breeze_check(onshore_min,
     ds['dT_cutoff'] = dT_cutoff
     ds['wdir_cutoff'] = wdir_cutoff            
     ds = ds.expand_dims('datetime')
-    dtime = ds.XTIME.expand_dims('datetime')
-    ds = ds.drop('XTIME')
+    if model == 'WRF':
+        dtime = ds.XTIME.expand_dims('datetime')
+        ds = ds.drop('XTIME')
+    elif model == 'HRRR':
+        dtime = xr.DataArray([pd.to_datetime(out_file.TMP_P0_L103_GLC0.initial_time,format='%m/%d/%Y (%H:%M)')],dims=['datetime'])
     ds['datetime'] = dtime
 
     return(ds)
@@ -604,7 +681,7 @@ class DetectBayBreeze():
         wspd = station.wspd.dropna(dim='datetime',how='all').resample(datetime=sample_rate).interpolate('linear')
         wspd_before = np.nanmin(wspd.sel(datetime=slice(self.passage - pd.Timedelta(1.0,'h'),self.passage)).data)
         wspd_after  = wspd.sel(datetime=slice(self.passage,self.passage + pd.Timedelta(1.0,'h')))
-        wspd_gust   = np.max(wspd.sel(datetime=slice(self.passage,self.passage + pd.Timedelta(0.5,'h'))).data)
+        wspd_gust   = np.max(wspd.sel(datetime=slice(self.passage,self.passage + pd.Timedelta(1.0,'h'))).data)
         if wspd_gust > wspd_before:
             burst = True
         else:
@@ -839,451 +916,190 @@ class DetectBayBreeze():
 
 
             
+def convert_met_to_math(met_deg):
+    math_deg = 90.0 - met_deg
+    if math_deg < 0.0: math_deg+=360.0
+    return math_deg
 
-class BayBreezeDetection():
-    '''
-    Detect bay breeze events with several different methods. Validate the events
-    with inland station data.
 
-    Methods implemented: "StaufferThompson2015"
-                         "Stauffer2015"
-                         "Sikora2010" (not yet available...)
-    '''
-    def __init__(self,station,inland_stations,resample=False,sample_rate='60min',light_winds=3.08667,show_plot=False,
-                 method='StaufferThompson2015',min_points=3,verbose=False):
-        '''
-        Variables:
-               station: dataset for given station
-        inland_station: dataset for inland station used in verification
-              resample: Should the data be resampled (boolean)
-           sample_rate: if 'resample' is True, resample to this rate (str)
-           light_winds: 6 knots in m/s
-                method: StaufferThompson2015, Stauffer2015, or Sikora2010 (not available)
-             show_plot: plot the inland stations (boolean)
-            min_points: minimum number of data points required for analysis (int)
-               verbose: Prints statements going through each step (boolean)
-        '''
-        bay_breeze_detected  = False
-        bay_breeze_validated = False
+def find_onshore_minmax(land_mask,
+                        dx = 3.0,
+                        dy = 3.0,
+                        max_water_dist = 80.0,
+                        low_pct_0 = 95.0,
+                        upr_pct_0 = 5.0,
+                        max_deg_range = 180.0,
+                        show_plots = False):
 
-        if (station.wspd.dropna(dim='datetime',how='any').size >= min_points) & \
-           (station.wdir.dropna(dim='datetime',how='any').size >= min_points):
-            if verbose: print('Detecting wind shift.')
-            self._detect_wind_shift(station,resample=resample,sample_rate=sample_rate,verbose=verbose)
-            if self.wind_shift:
-                var_names = []
-                for dd in station.data_vars: var_names.append(dd)
-                if 'cldc' in var_names:
-                    station_cld = station.cldc.dropna(dim='datetime',how='any')
-                elif ('skyc1' in var_names) and ('skyc2' in var_names) and ('skyc3' in var_names) and ('skyc4' in var_names):
-                    skyc1 = station.skyc1.values#.dropna(dim='datetime',how='any')
-                    station_cld = ['']*len(skyc1)
+    water_mask = land_mask.copy().where(land_mask==0.0) + 1.0
+    nx,ny = np.shape(land_mask)
+    x = np.arange(0,nx)*dx
+    y = np.arange(0,nx)*dy
+    xy,yx = np.meshgrid(x,y)
+    
+    window_len = int(max_water_dist/dx)*2
+    half_window_len = int(window_len/2)
+    window_center = int((window_len)/2)
+    window_dist = ((xy[:window_len+1,:window_len+1] - xy[window_center,window_center])**2 + 
+                   (yx[:window_len+1,:window_len+1] - yx[window_center,window_center])**2)**0.5
+    window_dist[np.where(window_dist > max_water_dist)] = np.nan
+    window_filter = window_dist / window_dist
 
-                    for vv,val in enumerate(skyc1):
-                        station_cld[vv] = '{},{},{},{}'.format(str(val).strip(),
-                                                               str(station.skyc2.values[vv]).strip(),
-                                                               str(station.skyc3.values[vv]).strip(),
-                                                               str(station.skyc4.values[vv]).strip())
-                        if 'nan' in station_cld[vv]: station_cld[vv] = 'nan'
-                        if station_cld[vv] == ',,,': station_cld[vv] = 'nan'
-                        if station_cld[vv] == 'VV,,,': station_cld[vv] = 'nan'
-                    station_cld = xr.DataArray(station_cld,dims=['datetime'],coords=[station.datetime.values])
-                elif ('clw' in var_names):
-                    clw = station.clw.dropna(dim='datetime',how='any')
-                    station_cld = ['']*len(clw)
-                    for vv,val in enumerate(np.squeeze(clw.data)):
-                        if val <= 0.03: 
-                            station_cld[vv] = 'CLR'
+    window_x,window_y = np.meshgrid(np.arange(0,np.shape(window_dist)[1]+1)*dy - max_water_dist - 1.5,
+                                    np.arange(0,np.shape(window_dist)[0]+1)*dx - max_water_dist - 1.5)
+
+    window_deg = -1*(180.0*np.arctan(((yx[:window_len+1,:window_len+1] - yx[window_center,window_center])/
+                         (xy[:window_len+1,:window_len+1] - xy[window_center,window_center])))/(np.pi) - 90.0)
+    window_deg[:,:half_window_len] = window_deg[:,:half_window_len] + 180.0
+    window_deg[np.where(np.isnan(window_dist))] = np.nan
+
+    math_deg = 180.0*np.arctan(((yx[:window_len+1,:window_len+1] - yx[window_center,window_center])/
+                         (xy[:window_len+1,:window_len+1] - xy[window_center,window_center])))/(np.pi)
+    math_deg[:,:half_window_len] = math_deg[:,:half_window_len] + 180.0
+    math_deg[:half_window_len,half_window_len:] = 360 + math_deg[:half_window_len,half_window_len:]
+    math_deg[np.where(np.isnan(window_dist))] = np.nan
+
+
+    onshore_min = np.zeros((ny,nx))*np.nan
+    onshore_max = np.zeros((ny,nx))*np.nan
+    for ii in np.arange(half_window_len,nx-half_window_len):
+        for jj in np.arange(half_window_len,ny-half_window_len): 
+            if land_mask[jj,ii] == 1.0:
+                loc_water_mask = water_mask[jj-half_window_len:jj+half_window_len+1, ii-half_window_len:ii+half_window_len+1]
+                dist_water = loc_water_mask * window_dist
+                deg_water  = loc_water_mask * window_deg
+
+                # Break down the water bodies into groups:
+                water_bodies = skimage.morphology.label(~np.isnan(deg_water)).astype(np.float32)
+                water_bodies[water_bodies==0.0] = np.nan
+
+                water_body_size = {}
+                water_body_dist = {}
+                min_water_distance = 999.9
+                closest_water_body = 0.0
+
+                # If we have water bodies to check, enter loop:
+                if ~np.all(np.isnan(water_bodies)): 
+                    for i in np.arange(1.0,np.nanmax(water_bodies)+1.0): # Loop over all identified water bodies
+                        water_size = len(water_bodies[water_bodies==i])
+                        if water_size < 8: # Only check for large bodies
+                            water_bodies[water_bodies==i] = np.nan
                         else:
-                            station_cld[vv] = 'OVC'
-                    station_cld = np.asarray(station_cld)
-                    
-                    print('CLR: {}; OVC: {}'.format(
-                        len(np.where(station_cld == 'CLR')[0]),
-                        len(np.where(station_cld == 'OVC')[0])))
-                    station_cld = xr.DataArray(station_cld,dims=['datetime'],coords=[station.datetime.values])
-                else:
-                    station_cld = ['CLR']*len(station.datetime.dropna(dim='datetime',how='any'))
-                    print(len(station_cld),len(station.datetime.values))
-                    station_cld = xr.DataArray(station_cld,dims=['datetime'],coords=[station.datetime.values])
-                
-                if 'pcip' in var_names:
-                    if (type(station.pcip.data[0]) == str):
-                        pcp = station.pcip.dropna(dim='datetime',how='any')
-                        station_pcp = ['']*len(pcp)
-                        for vv,val in enumerate(np.squeeze(pcp.data)):
-                            if val == 'NP': 
-                                station_pcp[vv] = 0.0
-                            elif ('R' in val) or ('S' in val):
-                                print(val)
-                                station_pcp[vv] = 1.0
-                            else:
-                                station_pcp[vv] = 0.0
-                        station_pcp = np.asarray(station_pcp)
-                        station_pcp = xr.DataArray(station_pcp,dims=['datetime'],coords=[station.datetime.values])
-                    else:
-                        station_pcp = station.pcip.dropna(dim='datetime',how='any')
-                elif ('rainc' in var_names) and ('rainnc' in var_names):
-                    rainc  = np.squeeze(station.rainc.data)
-                    rainnc = np.squeeze(station.rainnc.data)
-                    tot_rain = (rainc[1:] - rainc[:-1]) + (rainnc[1:] - rainnc[:-1])
-                    tot_rain = np.concatenate([np.asarray([0.0]),tot_rain])
-                    
-                    station_pcp = xr.DataArray(tot_rain,dims=['datetime'],coords=[station.datetime.values])
-                    station_pcp = station_pcp.dropna(dim='datetime',how='any')
-                    
-                if len(station_cld.dropna(dim='datetime',how='any')) > 0:
-                    print('evaluating clouds')
-                    self._check_clouds_and_precip(station_cld,station_pcp)
-                if self.clear_or_dry:
-                    if method=='Stauffer2015':
-                        self._check_1degDwptRise(station,resample=resample,sample_rate=sample_rate,
-                                                 show_plot=show_plot)
-                        if self.dwpt_rise:
-                            print('BAY BREEZE DETECTED')
-                            bay_breeze_detected = True
-                    else:
-                        print('BAY BREEZE DETECTED')
-                        bay_breeze_detected = True
+                            water_body_size[i] = water_size
+                            water_body = water_bodies.copy()
+                            water_body[water_bodies!=i] = np.nan # Check only this water body
+                            water_body[~np.isnan(water_body)] = 1.0 # Set values to 1 to get mask for distance calculation
+                            water_body_min_dist = np.nanpercentile(water_body*dist_water,50)
+                            water_body_dist[i] = water_body_min_dist
 
-        self.detected  = bay_breeze_detected
-        self.validated = bay_breeze_validated
+                    # Small water bodies were removed, check to see if there are any large ones:
+                    if ~np.all(np.isnan(water_bodies)):
+                        # Find the largest and closest water bodies:
+                        largest_water_body = max(water_body_size,key=water_body_size.get)
+                        water_body_id = largest_water_body
+                        # Loop over all other water bodies
+                        for i in water_body_size.keys():
+                            if i != water_body_id:
+                                # Check to see if this water body is still relatively large:
+                                if water_body_size[i] >= 0.5*water_body_size[water_body_id]:
+                                    # Assign this the same water body ID
+                                    water_bodies[water_bodies==i] = water_body_id
 
-        if self.detected:
-            self._validate_bay_breeze(station,inland_stations=inland_stations,resample=resample,
-                                      sample_rate=sample_rate,show_plot=show_plot)
+                        # Set the selected water body (bodies) to 1.0 for masking
+                        water_bodies[water_bodies==water_body_id] = 1.0
 
-    def _check_1degDwptRise(self, station, resample=True, sample_rate=False, 
-                            show_plot=False):
-        _, index = np.unique(station['datetime'], return_index=True)
-        station = station.isel(datetime=index)
-        if resample:
-            station_dpt = station.dwpt.dropna(dim='datetime',how='any').resample(
-                                            datetime=sample_rate).interpolate('linear')
-        else:
-            station_dpt = station.dwpt.dropna(dim='datetime',how='any')
-        if len(station_dpt.values) > 1:
-            window_size = pd.to_timedelta(1,unit='h')
-            dpt_before = station_dpt.sel(datetime=slice(str(self.passage.values-window_size),str(self.passage.values)))
-            dpt_after  = station_dpt.sel(datetime=slice(str(self.passage.values),str(self.passage.values+window_size)))
-            print('Checking dewpoint rise...')
-            if (len(dpt_before.values) > 0) and (len(dpt_after.values) > 0):
-                print('here...')
-                min_before = np.around(np.min(dpt_before.values),decimals=4)
-                max_after  = np.around(np.max(dpt_after.values),decimals=4)
-                if max_after - min_before >= 1.0:
-                    print('{} - {}: good!'.format(max_after,min_before))
-                    self.dwpt_rise = True
-                else:
-                    print('{} - {}: bad.'.format(max_after,min_before))
-                    self.dwpt_rise = False
-            else:
-                print('Not enough datapoints...')
-                self.dwpt_rise = False
-        else:
-            print('Not enough datapoints...')
-            self.dwpt_rise = False
-        
-        if show_plot:
-            station_dpt.plot.line(marker='o')
-            plt.axvline(pd.to_datetime(self.passage.values),c='k',ls=':',alpha=0.5)
-            plt.title(station['datetime'].values[0])
-            plt.show()
-        
+                        # Multiply water body mask by direction to water:
+                        deg_water *= water_bodies
+
+                        # Check to see if there are negative and positive values in the same water body:
+                        deg_range = float(np.nanmax(deg_water)) - float(np.nanmin(deg_water))
+                        if deg_range > 300:
+                            deg_water[np.where(deg_water>300)] -= 360.0
+
+                        # Set limits for upper and lower bounds.
+                        # If range is too big (> max_deg_range) then we iterate by 5 degrees
+                        # ... on the upper and lower limits until the range is sufficient.
+                        if np.nanmax(water_bodies) > 0:
+                            good_lims = False
+                            low_pct = low_pct_0
+                            upr_pct = upr_pct_0
+                            while good_lims == False:
+                                lowr_lim = np.nanpercentile(deg_water,low_pct)
+                                uppr_lim = np.nanpercentile(deg_water,upr_pct)
+                                if lowr_lim - uppr_lim < max_deg_range:
+                                    good_lims = True
+                                else:
+                                    low_pct -= 5.0
+                                    upr_pct += 5.0                                
+                        else: # Set limits to nan when water_bodies is all nan
+                            lowr_lim = np.nan
+                            uppr_lim = np.nan
+
+                        onshore_min[jj,ii] = uppr_lim 
+                        onshore_max[jj,ii] = lowr_lim
 
 
-    def _validate_bay_breeze(self, station, inland_stations, light_winds=3.08667, 
-                             resample=True, sample_rate=False, show_plot=False):
-        station_names = inland_stations['station'].values
-        n_inland = np.squeeze(np.shape(station_names))
-        
-        if np.size(n_inland) == 0:
-            n_inland = 1
-            station_names = [station_names]
-        station_validated = np.zeros((n_inland), dtype=bool)
-        bay_breeze_validated  = False
-        low_winds_in_period   = False
-        onshore_dir_validated = False
-        if show_plot: fig,ax = plt.subplots(nrows=2,sharex=True)
-        for sin,inland in enumerate(station_names):
-            if n_inland > 1:
-                inland_wspd = inland_stations.sel(station=inland).wspd.dropna(dim='datetime',how='any')
-                inland_wdir = inland_stations.sel(station=inland).wdir.dropna(dim='datetime',how='any') 
-            else:
-                inland_wspd = inland_stations.wspd.dropna(dim='datetime',how='any')
-                inland_wdir = inland_stations.wdir.dropna(dim='datetime',how='any')
-            if resample:
-                inland_wspd = inland_stations.sel(station=inland).wspd.dropna(dim='datetime',how='any').resample(
-                                                                datetime=sample_rate).interpolate('linear')
-                inland_wdir = inland_stations.sel(station=inland).wdir.dropna(dim='datetime',how='any').resample(
-                                                                datetime=sample_rate).interpolate('linear')
-            
-            is_onshore  = ((inland_wdir>=station.onshore_min) & (inland_wdir <= station.onshore_max)).data.squeeze()
-            onshore  = ['']*inland_wdir.size
-            on_lbl = 'a'
-            new_on_lbl = True
+                    if show_plots:
+                        lwr_xe = max_water_dist*np.cos(np.radians(convert_met_to_math(lowr_lim)))
+                        lwr_ye = max_water_dist*np.sin(np.radians(convert_met_to_math(lowr_lim)))
+                        upr_xe = max_water_dist*np.cos(np.radians(convert_met_to_math(uppr_lim)))
+                        upr_ye = max_water_dist*np.sin(np.radians(convert_met_to_math(uppr_lim)))
 
-            if inland_wdir.size > 1:
-                for ii in range(0,inland_wdir.size):
-                    if is_onshore[ii]:
-                        onshore[ii] = '{}'.format(on_lbl)
-                        new_on_lbl = False
-                    else:
-                        if new_on_lbl == False:
-                            on_lbl = chr(ord(on_lbl)+1)
-                            new_on_lbl = True
-            onshore_count = Counter(onshore)
-            onshore_time  = 0.0
-            #print(onshore)
-            for lbl in onshore_count.keys():
-                if len(lbl) > 0:
-                    if onshore_count[lbl] > 1:
-                        onshore_inds  = np.where(np.asarray(onshore) == lbl)[0]
-                        onshore_s     = inland_wdir.datetime.data[onshore_inds[0]]
-                        onshore_e     = inland_wdir.datetime.data[onshore_inds[-1]]
-                        onshore_start = inland_wspd.datetime.sel(datetime=onshore_s, method='nearest').data
-                        onshore_end   = inland_wspd.datetime.sel(datetime=onshore_e, method='nearest').data
-                        #onshore_start = inland_wspd.datetime.sel(datetime=onshore_s, method='nearest', tolerance=np.timedelta64(1,'h')).data
-                        #onshore_end   = inland_wspd.datetime.sel(datetime=onshore_e, method='nearest', tolerance=np.timedelta64(1,'h')).data
-                        #print(np.timedelta64(onshore_end-onshore_start,'m'))
-                        onshore_time += np.timedelta64(onshore_end-onshore_start,'m') / np.timedelta64(1, 'h')
-                        #print(onshore_time)
-            if onshore_time <= 2.0:
-                #print('Good time...')
-                onshore_dir_validated = True
-            else:
-                onshore_dir_validated = False
-            low_winds_in_period = np.all(inland_wspd.data <= light_winds)
-            #print(onshore_dir_validated,low_winds_in_period)
+                        mid_xe = max_water_dist*np.cos(np.radians(convert_met_to_math(np.nanmedian(deg_water))))
+                        mid_ye = max_water_dist*np.sin(np.radians(convert_met_to_math(np.nanmedian(deg_water))))
 
-            # Wind speed validation... less than light_winds the whole period:
+                        fig = plt.figure(figsize=(12,9))
+                        lm_pltF = plt.subplot2grid((2,2),(0,0),aspect='equal')
+                        plt_landmask = lm_pltF.pcolormesh(lon,lat,land_mask.where(land_mask==0.0))#,levels=[0.5],colors='k')
+                        lm_pltF.scatter(lon[jj,ii],lat[jj,ii],facecolor='b',marker='*',s=200)
+                        lm_pltF.tick_params(labelsize=15)
+                        lm_pltF.set_xlabel('Longitude',size=18)
+                        lm_pltF.set_ylabel('Latitude',size=18)
 
-            if onshore_dir_validated | low_winds_in_period:
-                station_validated[sin] = True
-            else:
-                print('Onshore dir: {}, onshore low winds: {}'.format(onshore_dir_validated,low_winds_in_period))
-            if inland_wspd.sizes['datetime'] > 0 and show_plot:
-                inland_wspd.plot(marker='o',ax=ax[0],label=inland)
-                inland_wdir.plot(marker='o',ax=ax[1],label=inland)
-                ax[0].fill_between([pd.to_datetime('2000'),
-                                    pd.to_datetime('2030')],0.0,light_winds,color='grey',alpha=0.2,lw=0.0)
-                ax[1].fill_between([pd.to_datetime('2000'),
-                                    pd.to_datetime('2030')],float(station.onshore_min.values),float(station.onshore_max.values),
-                                    color='grey',alpha=0.2,lw=0.0)
-                ax[1].set_xlim(station.datetime.data[0],station.datetime.data[-1])
+                        lm_plt = plt.subplot2grid((2,2),(0,1),aspect='equal')
+                        plt_landmask = lm_plt.pcolormesh(window_x,window_y,loc_water_mask,norm=Normalize(0,max_water_dist))
+                        plt.colorbar(plt_landmask,ax=lm_plt)
+                        lm_plt.scatter(0,0,facecolor='b',marker='*',s=400)
+                        lm_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
+                        lm_plt.set_ylim(np.nanmin(window_y)-5.0,np.nanmax(window_y)+5.0)
+                        lm_plt.tick_params(labelsize=15)
+                        lm_plt.set_ylabel('Distance [km]',size=18)
 
-        if show_plot:
-            ax[0].legend(loc=2)
-            ax[0].set_ylim(0,15)
-            ax[1].set_ylim(0,360)
-            plt.show()
+                        dist_plt = plt.subplot2grid((2,2),(1,0),aspect='equal')
+                        dist_plt_cm = dist_plt.pcolormesh(window_x,window_y,dist_water,norm=Normalize(0,max_water_dist))
+                        plt.colorbar(dist_plt_cm,ax=dist_plt)
+                        dist_plt.scatter(0,0,facecolor='b',marker='*',s=400)
+                        dist_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
+                        dist_plt.set_ylim(np.nanmin(window_y)-5.0,np.nanmax(window_y)+5.0)
+                        dist_plt.tick_params(labelsize=15)
+                        dist_plt.set_xlabel('Distance [km]',size=18)
+                        dist_plt.set_ylabel('Distance [km]',size=18)
 
-        if np.all(station_validated):
-            print("Bay Breeze Validated!")
-            bay_breeze_validated = True
-        else:
-            print('Cannot validate Bay Breeze...')
-            bay_breeze_validated = False
+                        deg_plt = plt.subplot2grid((2,2),(1,1),aspect='equal')
+                        deg_plt_cm = deg_plt.pcolormesh(window_x,window_y,deg_water)#,norm=Normalize(0,360))
+                        plt.colorbar(deg_plt_cm,ax=deg_plt)
+                        deg_plt.plot([0,lwr_xe,upr_xe,0],[0,lwr_ye,upr_ye,0],c='r')
+                        deg_plt.plot([0,mid_xe],[0,mid_ye],c='g')
+                        deg_plt.scatter(0,0,facecolor='b',marker='*',s=400,zorder=5)
+                        ##ax[0].plot([0,upr_xe],[0,upr_ye],c='r')
+                        #deg_plt = ax[1].pcolormesh(window_x,window_y,deg_water)#,norm=Normalize(0,360))
+                        #plt.colorbar(deg_plt,ax=ax[1])
+                        deg_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
+                        deg_plt.set_ylim(np.nanmin(window_y)-5.0,np.nanmax(window_y)+5.0)
+                        deg_plt.tick_params(labelsize=15)
+                        deg_plt.set_xlabel('Distance [km]',size=18)
+                        plt.show()
+                        wefwef
 
-        self.validated = bay_breeze_validated
-
-    def _check_clouds_and_precip(self,station_cld,station_pcp):
-        '''
-        If skies were less than broken and there was no measureable rainfall during the day
-        '''
-        for cc,cloud in enumerate(station_cld.values):
-            if ',' in cloud: 
-                if 'OVC' in cloud:
-                    station_cld.values[cc] = 'OVC'
-                elif 'BKN' in cloud:
-                    station_cld.values[cc] = 'BKN'
-                elif 'SCT' in cloud:
-                    station_cld.values[cc] = 'SCT'
-                elif 'FEW' in cloud:
-                    station_cld.values[cc] = 'FEW'
-                elif 'CLR' in cloud:
-                    station_cld.values[cc] = 'CLR'
-        ctype_count = Counter(station_cld.values)
-        cloud_sum = 0
-        nobs = 0
-        # Cloud cover is reported in terms of 1/8th of sky cover with 1-2/8th being FEW,...
-        # ...3-4/8ths being SCT, 5-7/8th being BKN and 8/8 denoted at OVC
-        cloud_val = {'CLR': 0.0, 'FEW': 1.5, 'SCT': 3.5, 'BKN': 6.0, 'OVC': 8.0}
-        for ctype in ctype_count.keys():
-            if ctype != '' and ctype != 'nan' and ctype != ' ':
-                cloud_sum += ctype_count[ctype]*cloud_val[ctype]
-                nobs += ctype_count[ctype]
-        if nobs == 0: 
-            cloudy_skies = True
-        else:
-            avg_cloud = cloud_sum/nobs
-            for cloud, val in cloud_val.items():
-                if val == avg_cloud:
-                    avg_cloud_type = cloud
-
-            #cloudy_skies = any('BKN' in cloud for cloud in clouds.values) | any('OVC' in cloud for cloud in clouds.values)
-            cloudy_skies = avg_cloud >= cloud_val['BKN']
-        clear_skies  = not cloudy_skies
-        print('clear skies: ', clear_skies)
-        #print(station_pcp.datetime)
-        #print(self.passage)
-
-        if len(station_pcp.values) > 0:
-            total_precip = np.sum(station_pcp.values)
-        else:
-            total_precip = 0.0   
-        if total_precip > 0.0:
-            rain = True
-        else:
-            rain = False
-        dry = not rain    
-        print('dry: ', dry)
-        clear_or_dry = clear_skies | dry
-        self.clear_or_dry = clear_or_dry
-
-
-    def _detect_wind_shift(self, station, sample_rate='60min', light_winds=3.08667, resample=True,verbose=False):
-        '''
-        From Stauffer and Thompson, 2015:
-
-        For each day, the daytime (0900 to 1600 Eastern Standard Time, EST) wind directions were evaluated: 
-            
-        If the hourly wind direction measurement changed from either offshore, calm, or light and variable (less than 6 kt), 
-        to onshore sustained for two or more consecutive hours during the period...
-        '''
-
-        _, index = np.unique(station['datetime'], return_index=True)
-        station = station.isel(datetime=index)
-        if resample:
-            station_spd = station.wspd.dropna(dim='datetime',how='all').resample(
-                                            datetime=sample_rate).interpolate('linear').dropna(dim='datetime',how='all')
-            station_dir = station.wdir.dropna(dim='datetime',how='all').resample(
-                                            datetime=sample_rate).interpolate('linear').dropna(dim='datetime',how='all')
-        else:
-            station_spd = station.wspd.dropna(dim='datetime',how='any')
-            station_dir = station.wdir.dropna(dim='datetime',how='any')
-        
-        
-        
-        
-        
-        fig,ax = plt.subplots(nrows=2,figsize=(12,8),sharex=True)
-        station_spd.plot.line(marker='o',ax=ax[0])
-        ax[0].set_ylim(0,15)
-        ax[0].fill_between([pd.to_datetime('2000'),
-                          pd.to_datetime('2030')],0.0,light_winds,color='grey',alpha=0.2,lw=0.0)
-        station_dir.plot.line(color='purple', marker='o',ax=ax[1])
-        ax[1].fill_between([station.datetime.data[0],
-                          station.datetime.data[-1]],float(station.onshore_min.values),
-                          float(station.onshore_max.values),color='grey',alpha=0.2,lw=0.0)
-        #ax[1].set_xlim(station.datetime.data[0],station.datetime.data[-1])
-        #ax[1].set_ylim(0,360)
-        ax[1].set_xlim(station.datetime.data[0],station.datetime.data[-1])
-        plt.show()
-        
-        
-        
-        
-        
-        
-        
-        is_onshore  = ((station_dir>=station.onshore_min) & (station_dir <= station.onshore_max)
-                        & (station_dir <= 360.0)).data.squeeze()
-        is_offshore = ((station_dir<station.onshore_min) | \
-                      ((station_dir>station.onshore_max) & (station_dir<=360.0))).data.squeeze()
-        
-        is_lt_vrb   = ((station_spd<light_winds) & (station_dir > 360.0)).data.squeeze()
-        if len(is_lt_vrb) == len(is_offshore):
-            offshore_conditions = is_lt_vrb | is_offshore
-        else:
-            offshore_conditions = False
-        if verbose: print('   offshore: {}'.format(is_offshore))
-        if verbose: print('light & vrb: {}'.format(is_lt_vrb))
-        if verbose: print(' eaither or: {}'.format(offshore_conditions))
-        if verbose: print('    onshore: {}'.format(is_onshore))
-        wind_shift          = False
-        bay_breeze_detected = False
-        bay_breeze_start    = None
-        bay_breeze_pass     = None
-        bay_breeze_end      = None
-        if np.any(offshore_conditions) and np.any(is_onshore):
-            offshore = ['']*station_dir.size
-            onshore  = ['']*station_dir.size
-            off_lbl = 'a'
-            on_lbl = 'a'
-
-            new_off_lbl = False
-            new_on_lbl = True
-            for ii in range(0,station_dir.size):
-                if is_onshore[ii]:
-                    onshore[ii] = '{}'.format(on_lbl)
-                    new_on_lbl = False
-                    if new_off_lbl == False:
-                        off_lbl = chr(ord(off_lbl)+1)
-                        new_off_lbl = True
-
-                elif offshore_conditions[ii]:
-                    offshore[ii] = '{}'.format(off_lbl)
-                    new_off_lbl = False
-                    if new_on_lbl == False:
-                        on_lbl = chr(ord(on_lbl)+1)
-                        new_on_lbl = True
-                else:
-                    if offshore_conditions[ii-1]:  
-                        off_lbl = chr(ord(off_lbl)+1)
-                        on_lbl = off_lbl
-                        new_off_lbl = False
-                    elif is_onshore[ii-1]:
-                        on_lbl = chr(ord(on_lbl)+1)
-                        new_on_lbl = True
-
-            if verbose: 
-                print(offshore)
-                print(onshore)
-            offshore_count = Counter(offshore) 
-            onshore_count  = Counter(onshore)
-            for lbl in offshore_count.keys():
-                if len(lbl) > 0:
-                    if lbl in onshore_count.keys():
-                        if resample:
-                            offshore_time = (offshore_count[lbl])*pd.to_timedelta(sample_rate) / np.timedelta64(1, 'h')
-                            onshore_time  = (onshore_count[lbl]-1)*pd.to_timedelta(sample_rate) / np.timedelta64(1, 'h')
-                        else:
-                            offshore_inds = np.where(np.asarray(offshore)==lbl)[0]
-                            offshore_s    = offshore_inds[0]
-                            offshore_e    = offshore_inds[-1]
-
-                            onshore_inds  = np.where(np.asarray(onshore)==lbl)[0]
-                            onshore_s     = onshore_inds[0]
-                            onshore_e     = onshore_inds[-1]
-                            offshore_e = onshore_s
-
-                            if len(offshore_inds) == 1:
-                                offshore_time = 0.0
-                            else:
-                                offshore_start = station_spd.datetime.isel(datetime=offshore_s).data
-                                offshore_end   = station_spd.datetime.isel(datetime=offshore_e).data
-                                offshore_time = np.timedelta64(offshore_end-offshore_start,'m') / np.timedelta64(1, 'h')
-
-                            if len(onshore_inds) == 1:
-                                onshore_time = 0.0
-                            else:
-                                onshore_start = station_spd.datetime.isel(datetime=onshore_s).data
-                                onshore_end   = station_spd.datetime.isel(datetime=onshore_e).data
-                                onshore_time = np.timedelta64(onshore_end-onshore_start,'m') / np.timedelta64(1, 'h')
-                        if verbose: print('Label {} offshore: {} hours'.format(lbl,offshore_time))
-                        if verbose: print('Label {} onshore:  {} hours'.format(lbl,onshore_time))
-                        if offshore_time >= 1.0 and onshore_time >= 1.8:
-                            bay_breeze_start = station_spd.datetime[np.where(np.asarray(offshore)==lbl)[0][0]]
-                            bay_breeze_pass  = station_spd.datetime[np.where(np.asarray(onshore)==lbl)[0][0]]
-                            bay_breeze_end   = station_spd.datetime[np.where(np.asarray(onshore)==lbl)[0][-1]]
-                            #print(bay_breeze_start.data)
-                            #print(bay_breeze_pass.data)
-                            #print(bay_breeze_end.data)
-                            if bay_breeze_start < bay_breeze_pass:
-                                wind_shift = True
-        if (wind_shift) and (verbose): print('wind shift detected...')
-        self.wind_shift = wind_shift
-        self.start    = bay_breeze_start
-        self.passage  = bay_breeze_pass 
-        self.end      = bay_breeze_end  
+    onshore_min_da = land_mask.copy()
+    onshore_min_da.data = onshore_min
+    onshore_max_da = land_mask.copy()
+    onshore_max_da.data = onshore_max
+    onshore_min_max_ds = xr.Dataset({'onshore_min':onshore_min_da,
+                                     'onshore_max':onshore_max_da})
+    onshore_min_max_ds.attrs['dx'] = dx
+    onshore_min_max_ds.attrs['dy'] = dy
+    onshore_min_max_ds.attrs['max_water_dist'] = max_water_dist
+    onshore_min_max_ds.attrs['max_deg_range'] = max_deg_range
+    
+    return(onshore_min_max_ds)
