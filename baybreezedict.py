@@ -20,6 +20,7 @@ import scipy.stats as stats
 from mmctools.helper_functions import calc_wind
 from sklearn.linear_model import LinearRegression
 import skimage.morphology
+from matplotlib.colors import Normalize
 
 def spatial_breeze_check(onshore_min,
                          onshore_max,
@@ -929,7 +930,9 @@ def find_onshore_minmax(land_mask,
                         low_pct_0 = 95.0,
                         upr_pct_0 = 5.0,
                         max_deg_range = 180.0,
-                        show_plots = False):
+                        min_water_size=8,
+                        test_mode=False,
+                        i_s=None,i_e=None,j_s=None,j_e=None):
 
     water_mask = land_mask.copy().where(land_mask==0.0) + 1.0
     nx,ny = np.shape(land_mask)
@@ -959,11 +962,29 @@ def find_onshore_minmax(land_mask,
     math_deg[:half_window_len,half_window_len:] = 360 + math_deg[:half_window_len,half_window_len:]
     math_deg[np.where(np.isnan(window_dist))] = np.nan
 
-
+    '''
+    plt.figure(figsize=(14,5))
+    plt.subplot(121,aspect='equal')
+    plt.pcolormesh(window_x,window_y,window_dist,cmap=plt.cm.viridis)
+    plt.colorbar()
+    plt.tick_params(labelsize=15)
+    plt.ylabel('Distance [km]',size=16)
+    plt.xlabel('Distance [km]',size=16)
+    plt.subplot(122,aspect='equal')
+    plt.pcolormesh(window_x,window_y,window_deg,cmap=plt.cm.viridis)
+    plt.colorbar()
+    plt.tick_params(labelsize=15)
+    plt.xlabel('Distance [km]',size=16)
+    plt.show()
+    '''
     onshore_min = np.zeros((ny,nx))*np.nan
     onshore_max = np.zeros((ny,nx))*np.nan
-    for ii in np.arange(half_window_len,nx-half_window_len):
-        for jj in np.arange(half_window_len,ny-half_window_len): 
+    if not test_mode:
+        i_s,i_e = half_window_len,nx-half_window_len
+        j_s,j_e = half_window_len,ny-half_window_len
+
+    for ii in np.arange(i_s,i_e):
+        for jj in np.arange(j_s,j_e): 
             if land_mask[jj,ii] == 1.0:
                 loc_water_mask = water_mask[jj-half_window_len:jj+half_window_len+1, ii-half_window_len:ii+half_window_len+1]
                 dist_water = loc_water_mask * window_dist
@@ -982,7 +1003,7 @@ def find_onshore_minmax(land_mask,
                 if ~np.all(np.isnan(water_bodies)): 
                     for i in np.arange(1.0,np.nanmax(water_bodies)+1.0): # Loop over all identified water bodies
                         water_size = len(water_bodies[water_bodies==i])
-                        if water_size < 8: # Only check for large bodies
+                        if water_size < min_water_size: # Only check for large bodies
                             water_bodies[water_bodies==i] = np.nan
                         else:
                             water_body_size[i] = water_size
@@ -999,11 +1020,59 @@ def find_onshore_minmax(land_mask,
                         water_body_id = largest_water_body
                         # Loop over all other water bodies
                         for i in water_body_size.keys():
+                            
+                            deg_mask = water_bodies.copy()
+                            deg_mask[water_bodies!=i] = np.nan
+                            deg_mask[~np.isnan(deg_mask)] = 1.0
+                            
+                            deg_water_body = deg_water.where(deg_mask==1.0)
+                            deg_range = float(np.nanmax(deg_water_body)) - float(np.nanmin(deg_water_body))
+                            
+                            # ORIGINAL:
+                            #if deg_range > 300:
+                            #    deg_water_body[np.where(deg_water_body>300)] -= 360.0
+                            if (deg_range > 300) & (deg_range <= 350):
+                                if np.nanpercentile(deg_water_body,50) > 260:
+                                    deg_water_body[np.where(deg_water_body<15)] += 360
+                                elif np.nanpercentile(deg_water_body,50) < 105:
+                                    deg_water_body[np.where(deg_water_body>345)] -= 360
+                                    
+                            if deg_range > 350:
+                                if np.nanpercentile(deg_water_body,50) > 225:
+                                    deg_water_body[np.where(deg_water_body<15)] += 360
+                                elif np.nanpercentile(deg_water_body,50) < 135:
+                                    deg_water_body[np.where(deg_water_body>345)] -= 360
+                                else:
+                                    high_nums = np.count_nonzero(deg_water_body>210)
+                                    low_nums  = np.count_nonzero(deg_water_body<150)
+                                    if high_nums > low_nums:
+                                        deg_water_body[np.where(deg_water_body<35)] += 360
+                                    else:
+                                        deg_water_body[np.where(deg_water_body>325)] -= 360
+                                    
+
+
+                            #plt.pcolormesh(deg_water_body)
+                            #plt.colorbar()
+                            #plt.show()
+                            
+                            deg_water[np.where(deg_mask==1.0)] = deg_water_body[np.where(deg_mask==1.0)]
+                            
+                            
+
                             if i != water_body_id:
                                 # Check to see if this water body is still relatively large:
                                 if water_body_size[i] >= 0.5*water_body_size[water_body_id]:
                                     # Assign this the same water body ID
                                     water_bodies[water_bodies==i] = water_body_id
+                                else:
+                                    water_bodies[water_bodies==i] = np.nan
+                                    
+                                    
+                        #plt.pcolormesh(deg_water)
+                        #plt.colorbar()
+                        #plt.show()
+                        #wefwef
 
                         # Set the selected water body (bodies) to 1.0 for masking
                         water_bodies[water_bodies==water_body_id] = 1.0
@@ -1011,10 +1080,16 @@ def find_onshore_minmax(land_mask,
                         # Multiply water body mask by direction to water:
                         deg_water *= water_bodies
 
+
                         # Check to see if there are negative and positive values in the same water body:
                         deg_range = float(np.nanmax(deg_water)) - float(np.nanmin(deg_water))
-                        if deg_range > 300:
-                            deg_water[np.where(deg_water>300)] -= 360.0
+                        #plt.pcolormesh(deg_water)
+                        #plt.colorbar()
+                        #plt.show()
+                        
+                        # ORIGINAL:
+                        #if deg_range > 300:
+                        #    deg_water[np.where(deg_water>300)] -= 360.0
 
                         # Set limits for upper and lower bounds.
                         # If range is too big (> max_deg_range) then we iterate by 5 degrees
@@ -1039,7 +1114,7 @@ def find_onshore_minmax(land_mask,
                         onshore_max[jj,ii] = lowr_lim
 
 
-                    if show_plots:
+                    if test_mode:
                         lwr_xe = max_water_dist*np.cos(np.radians(convert_met_to_math(lowr_lim)))
                         lwr_ye = max_water_dist*np.sin(np.radians(convert_met_to_math(lowr_lim)))
                         upr_xe = max_water_dist*np.cos(np.radians(convert_met_to_math(uppr_lim)))
@@ -1050,14 +1125,17 @@ def find_onshore_minmax(land_mask,
 
                         fig = plt.figure(figsize=(12,9))
                         lm_pltF = plt.subplot2grid((2,2),(0,0),aspect='equal')
-                        plt_landmask = lm_pltF.pcolormesh(lon,lat,land_mask.where(land_mask==0.0))#,levels=[0.5],colors='k')
+                        lon = land_mask.XLONG
+                        lat = land_mask.XLAT
+                        plt_landmask = lm_pltF.pcolormesh(lon,lat,land_mask.where(land_mask==0.0),
+                                                          cmap=plt.cm.viridis)#,levels=[0.5],colors='k')
                         lm_pltF.scatter(lon[jj,ii],lat[jj,ii],facecolor='b',marker='*',s=200)
                         lm_pltF.tick_params(labelsize=15)
                         lm_pltF.set_xlabel('Longitude',size=18)
                         lm_pltF.set_ylabel('Latitude',size=18)
 
                         lm_plt = plt.subplot2grid((2,2),(0,1),aspect='equal')
-                        plt_landmask = lm_plt.pcolormesh(window_x,window_y,loc_water_mask,norm=Normalize(0,max_water_dist))
+                        plt_landmask = lm_plt.pcolormesh(window_x,window_y,loc_water_mask,norm=Normalize(0,max_water_dist),cmap=plt.cm.viridis)
                         plt.colorbar(plt_landmask,ax=lm_plt)
                         lm_plt.scatter(0,0,facecolor='b',marker='*',s=400)
                         lm_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
@@ -1066,7 +1144,7 @@ def find_onshore_minmax(land_mask,
                         lm_plt.set_ylabel('Distance [km]',size=18)
 
                         dist_plt = plt.subplot2grid((2,2),(1,0),aspect='equal')
-                        dist_plt_cm = dist_plt.pcolormesh(window_x,window_y,dist_water,norm=Normalize(0,max_water_dist))
+                        dist_plt_cm = dist_plt.pcolormesh(window_x,window_y,dist_water,norm=Normalize(0,max_water_dist),cmap=plt.cm.viridis)
                         plt.colorbar(dist_plt_cm,ax=dist_plt)
                         dist_plt.scatter(0,0,facecolor='b',marker='*',s=400)
                         dist_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
@@ -1076,7 +1154,7 @@ def find_onshore_minmax(land_mask,
                         dist_plt.set_ylabel('Distance [km]',size=18)
 
                         deg_plt = plt.subplot2grid((2,2),(1,1),aspect='equal')
-                        deg_plt_cm = deg_plt.pcolormesh(window_x,window_y,deg_water)#,norm=Normalize(0,360))
+                        deg_plt_cm = deg_plt.pcolormesh(window_x,window_y,deg_water,cmap=plt.cm.viridis)#,norm=Normalize(0,360))
                         plt.colorbar(deg_plt_cm,ax=deg_plt)
                         deg_plt.plot([0,lwr_xe,upr_xe,0],[0,lwr_ye,upr_ye,0],c='r')
                         deg_plt.plot([0,mid_xe],[0,mid_ye],c='g')
@@ -1089,8 +1167,9 @@ def find_onshore_minmax(land_mask,
                         deg_plt.tick_params(labelsize=15)
                         deg_plt.set_xlabel('Distance [km]',size=18)
                         plt.show()
-                        wefwef
-
+                        print()
+                        #wefwef
+    
     onshore_min_da = land_mask.copy()
     onshore_min_da.data = onshore_min
     onshore_max_da = land_mask.copy()
