@@ -31,7 +31,11 @@ def spatial_breeze_check(onshore_min,
                          wdir_check='vertical',
                          wdir_cutoff_pct=80,
                          model='WRF',
-                         top_ind = 18):
+                         top_ind = 18,
+                         check_rain=False,
+                         rain_da=None,
+                         check_clouds=False,
+                         cloud_cutoff=0.5):
     
     if model == 'WRF':
         if land_mask is None: land_mask = out_file.LANDMASK
@@ -236,15 +240,41 @@ def spatial_breeze_check(onshore_min,
     dT = dT.fillna(-999.9)
     bay_breeze_area_data[dT >= dT_cutoff] += 1.0
     #bay_breeze_area_data[dU > 0.5] += 1.0
-    bay_breeze_area.data = bay_breeze_area_data 
+    bay_breeze_area.data = bay_breeze_area_data
     
     bay_breeze_detection_dict = {   'breeze':bay_breeze_area,
                                  'good_wdir':good_wind_dir,
                                         'dT':dT,
                                    'dT_full':dT_full,
-                                        'dU':dU}
+                                        'dU':dU
+                                }
+                                
     
-    
+    if check_rain:
+        if rain_da is None:
+            if model == 'HRRR':
+                rain_da = out_file.APCP_P8_L1_GLC0_acc
+            else:
+                print('No rain var detected... setting to 0')
+                rain_da = dT.copy()*0.0
+        
+        is_raining = rain_da.where(rain_da>=0.01)
+        is_raining /= is_raining
+        is_raining = is_raining.fillna(0.0)
+        bay_breeze_detection_dict['is_raining'] = is_raining
+
+    if check_clouds:
+        if model == 'WRF':
+            clouds = out_file.CLDFRA.max(axis=0)
+        elif model == 'HRRR':
+            clouds = out_file.TCDC_P0_L10_GLC0/100.0
+        is_cloudy = clouds.where(clouds >= cloud_cutoff)
+        is_cloudy /= is_cloudy
+        is_cloudy = is_cloudy.fillna(0.0)
+        bay_breeze_detection_dict['is_cloudy'] = is_cloudy
+
+
+
     
     for kk,key in enumerate(bay_breeze_detection_dict.keys()):
         if key == 'breeze':
