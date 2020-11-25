@@ -18,7 +18,7 @@ from collections import Counter
 #from sklearn.linear_model import LinearRegression
 import scipy.stats as stats
 from mmctools.helper_functions import calc_wind
-from sklearn.linear_model import LinearRegression
+#from sklearn.linear_model import LinearRegression
 import skimage.morphology
 from matplotlib.colors import Normalize
 
@@ -272,6 +272,7 @@ def spatial_breeze_check(onshore_min,
         is_cloudy /= is_cloudy
         is_cloudy = is_cloudy.fillna(0.0)
         bay_breeze_detection_dict['is_cloudy'] = is_cloudy
+        bay_breeze_detection_dict['clouds'] = clouds
 
 
 
