@@ -32,7 +32,7 @@ def spatial_breeze_check(onshore_min,
                          top_ind = 18,
                          check_rain=False,
                          rain_da=None,
-                         rain_cutoff=2.5,
+                         rain_cutoff=2.5, # trace amount of rain
                          check_clouds=False,
                          cloud_cutoff=0.5):
     
@@ -303,6 +303,11 @@ def spatial_breeze_check(onshore_min,
 
     ds['dT_cutoff'] = dT_cutoff
     ds['wdir_cutoff'] = wdir_cutoff            
+    if check_clouds:
+        ds['cloud_cutoff'] = cloud_cutoff
+    if check_rain:
+        ds['rain_cutoff'] = rain_cutoff
+
     ds = ds.expand_dims('datetime')
     if model == 'WRF':
         dtime = ds.XTIME.expand_dims('datetime')
