@@ -15,10 +15,8 @@ import pandas as pd
 import glob
 import xarray as xr
 from collections import Counter
-#from sklearn.linear_model import LinearRegression
 import scipy.stats as stats
 from mmctools.helper_functions import calc_wind
-#from sklearn.linear_model import LinearRegression
 import skimage.morphology
 from matplotlib.colors import Normalize
 
@@ -34,6 +32,7 @@ def spatial_breeze_check(onshore_min,
                          top_ind = 18,
                          check_rain=False,
                          rain_da=None,
+                         rain_cutoff=2.5,
                          check_clouds=False,
                          cloud_cutoff=0.5):
     
@@ -255,10 +254,23 @@ def spatial_breeze_check(onshore_min,
             if model == 'HRRR':
                 rain_da = out_file.APCP_P8_L1_GLC0_acc
             else:
-                print('No rain var detected... setting to 0')
-                rain_da = dT.copy()*0.0
+                var_list = list(out_file.variables)
+                rain_vars = []
+                for varn in var_list: 
+                    if 'RAIN' in varn: 
+                        rain_vars.append(varn)
+                if len(rain_vars) > 0:
+                    for vv,varn in enumerate(rain_vars):
+                        if vv == 0:
+                            rain_da = out_file[varn].copy()
+                        else:
+                            rain_da += out_file[varn]
+                else:
+                    print('No rain var detected... setting to 0')
+                    rain_da = out_file.T*0.0
+     
         
-        is_raining = rain_da.where(rain_da>=0.01)
+        is_raining = rain_da.where(rain_da>=rain_cutoff)
         is_raining /= is_raining
         is_raining = is_raining.fillna(0.0)
         bay_breeze_detection_dict['is_raining'] = is_raining
