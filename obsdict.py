@@ -678,11 +678,14 @@ def get_FINO_obs(fdir,FINO=1,boom_deg=None):
     if FINO==1:
         var_dict = {
             'name'     : ['Wind_Speed_','Wind_Direction_','Air_Temperature_','Surface_Temperature_Buoy',
-                          'Air_Pressure_','Precipitation_','Humidity_','Global_Radiation_','Wind_Speed_U_Anemometer_'],
-            'str_len'  : [16,19,21,25,17,19,14,21,28],
+                          'Air_Pressure_','Precipitation_','Humidity_','Global_Radiation_','Wind_Speed_U_Anemometer_',
+                          'Mean_Wave_Period_Buoy','Significant_Wave_Height_Buoy',
+                          'Wave_Direction_Buoy'],
+            'str_len'  : [16,19,21,25,17,19,14,21,28,22,29,20],
             'indx_str' : ['spd_levels','dir_levels','tmp_levels','sst_levels','prs_levels','pcp_levels',
-                          'rh_levels','rad_levels','anm_levels'],
-            'var_str'  : ['wspd','wdir','temp','sst','pres','prcp','rh','rad','anm_spd']
+                          'rh_levels','rad_levels','anm_levels','sst_levels','sst_levels','sst_levels'],
+            'var_str'  : ['wspd','wdir','temp','sst','pres','prcp','rh','rad','anm_spd',
+                          'wave_prd','wave_hgt','wave_dir']
         }
     elif FINO==2:
         var_dict = {
@@ -817,7 +820,7 @@ def read_ASOS_1min(file_loc, weak_wind_dir_correction=True):
                         print('bad value: {}'.format(var_dict[varn][line_count-1]))
                         var_dict[varn][line_count-1] = pd.to_datetime('1800-01-01 00:00:00')
                         print('replaced with: {}'.format(var_dict[varn][line_count-1]))
-                        wefwef
+                        
             line_count += 1
 
     f.close()
@@ -852,6 +855,154 @@ def read_ASOS_1min(file_loc, weak_wind_dir_correction=True):
 
     df = pd.DataFrame.from_dict(var_dict).set_index('datetime')
     return(df)
+
+
+def read_ASOS_5min(file_loc, weak_wind_dir_correction=True):
+    '''
+    Read in 5-minute ASOS data from ftp://ftp.ncdc.noaa.gov/pub/data/asos-fivemin/
+    '''
+    def get_wspd_and_wdir(wind):
+        if len(wind) == 0:
+            wind = '999'
+        else:
+            wind = wind[0]
+        wind = wind.replace('KT','').replace('G',' ').split()
+        if len(wind) == 0:
+            wdir = np.nan
+            wspd = np.nan
+        else:
+            if len(wind[0]) == 5:
+                wdir = wind[0][:3]
+                wspd = wind[0][3:]
+                try:
+                    wdir = float(wdir)
+                except:
+                    wdir = np.nan
+                try:
+                    wspd = float(wspd)
+                except:
+                    wspd = np.nan
+            else:
+                wdir = np.nan
+                wspd = np.nan
+        return(wdir,wspd)
+
+    def get_temp_and_dwpt(tntd):
+        if len(tntd) > 1:
+            for tt in tntd:
+                tt_split = tt.split('/')
+                if len(tt_split) == 2:
+                    if (len(tt_split[0].replace('M','')) == 2) and (len(tt_split[1].replace('M','')) == 2):
+                        tmpdpt = tt
+        elif len(tntd) == 1:
+            tmpdpt = tntd[0]
+            tmpdpt = tmpdpt.split('/')
+        else:
+            tmpdpt = ['999','999']
+        if len(tmpdpt[0].replace('M','')) == 2:
+            try:
+                temp = float(tmpdpt[0].replace('M','-').replace('O','0').replace('B','0'))
+            except:
+                print(tmpdpt)
+                temp = np.nan
+        else:
+            temp = np.nan
+        if len(tmpdpt[1].replace('M','')) == 2:
+            try:
+                dwpt = float(tmpdpt[1].replace('M','-'))
+            except:
+                print(tmpdpt)
+                dwpt = np.nan
+        else:
+            dwpt = np.nan
+        return(temp,dwpt)
+    
+    def get_precip(pcip):
+        if pcip == []:
+            pcp = 0.0
+        else:
+            pcp = 1.0
+        return(float(pcp))
+    
+    def get_cloud_coverage(cldc):
+        clouds = []
+        if len(cldc) > 1:
+            for cc in cldc:
+                clouds.append(cc[:3])
+            clouds = ','.join(clouds)
+        elif len(cldc) == 1:
+            clouds = cldc[0][:3]
+        else:
+            clouds = ' '
+        return(clouds)
+        
+        
+        
+    var_dict = {  'station': [],
+                 'datetime': [],
+                     'wdir': [],
+                     'wspd': [],
+                     'cldc': [],
+                     'pcip': [],
+                     'temp': [],
+                     'dwpt': []
+               }
+    stn = file_loc.split('/')[-1].split('K')[-1][:3]
+    f = open(file_loc,'r')
+    line_count = 0
+    for ll,line in enumerate(f):
+        line = line.replace('{}"'.format(stn),'{} '.format(stn))
+        line = line.split()
+        if len(line[1]) > 26:
+            date = line[1][:26]
+            time = line[1][27:]
+            line[1] = date
+            line.insert(2,time)
+      
+        if len(line) > 5:
+
+            lst_h = int(line[2][:2])
+            try:
+                gmt_h = int(line[5][2:4].replace('P','0'))
+            except:
+                if var_dict['datetime'][ll-1].minute < 55:
+                    gmt_h = var_dict['datetime'][ll-1].hour
+                else:
+                    gmt_h = var_dict['datetime'][ll-1].hour + 1
+            time_change = gmt_h-lst_h
+            if time_change < 0:
+                time_change = time_change+24
+            date_time = datetime.strptime('{} {}'.format(line[1][3:11],line[2][:7]),'%Y%m%d %H:%M:%S')
+            var_dict['datetime'].append(date_time + pd.to_timedelta(time_change,'H'))
+            var_dict['station'].append(line[1][:3])
+            wind = []
+            tntd = []
+            pcip = []
+            cldc = []
+            for vv in line:
+                if vv[-2:] == 'KT':
+                    wind.append(vv)
+                if ('/' in vv) and (len(vv.replace('/','').replace('M','')) == 4):
+                    tntd.append(vv)
+                if (vv[-2:] == 'RA') or (vv[-2:] == 'SN') and (len(vv) <= 3):
+                    pcip.append(vv)
+                if ('CLR' in vv) or ('FEW' in vv) or ('SCT' in vv) or ('BKN' in vv) or ('OVC' in vv):
+                    cldc.append(vv)
+
+            wdir,wspd = get_wspd_and_wdir(wind)
+            temp,dwpt = get_temp_and_dwpt(tntd)
+            precip    = get_precip(pcip)
+            clouds    = get_cloud_coverage(cldc)
+            var_dict['wdir'].append(wdir)
+            var_dict['wspd'].append(wspd*0.514444)
+            var_dict['temp'].append(temp)
+            var_dict['dwpt'].append(dwpt)
+            var_dict['pcip'].append(precip)
+            var_dict['cldc'].append(clouds)
+    f.close()
+    df = pd.DataFrame.from_dict(var_dict).set_index('datetime')
+
+    return(df)                 
 
 
 def ASOS_to_ds(fdir,stn,lat,lon,year_range=None,onshore_min=None,onshore_max=None,
@@ -894,7 +1045,7 @@ def ASOS_to_ds(fdir,stn,lat,lon,year_range=None,onshore_min=None,onshore_max=Non
     elif asos_type == '5min':
         for ff,fname in enumerate(file_list):
             print(fname)
-            wefwef
+            
     ds = df.to_xarray() 
     ds = ds.assign_coords({'station':stn[1:]}).expand_dims('station')
     ds['lon'] = (['station'],[lon])
@@ -905,3 +1056,4 @@ def ASOS_to_ds(fdir,stn,lat,lon,year_range=None,onshore_min=None,onshore_max=Non
     if saveds: ds.to_netcdf(fsave_str.format(fdir,stn,year_range[0],year_range[-1]))
 
     return(ds)
+
