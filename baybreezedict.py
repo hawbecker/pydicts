@@ -19,6 +19,7 @@ import scipy.stats as stats
 from mmctools.helper_functions import calc_wind
 import skimage.morphology
 from matplotlib.colors import Normalize
+from matplotlib.patches import Ellipse
 
 def spatial_breeze_check(onshore_min,
                          onshore_max,
@@ -32,7 +33,7 @@ def spatial_breeze_check(onshore_min,
                          top_ind = 18,
                          check_rain=False,
                          rain_da=None,
-                         rain_cutoff=2.5, # trace amount of rain
+                         rain_cutoff=0.25, # trace amount of rain
                          check_clouds=False,
                          cloud_cutoff=0.5):
     
@@ -81,6 +82,9 @@ def spatial_breeze_check(onshore_min,
             bb_temp = temp.copy().where(land_mask==1.0)
             z_f = (np.squeeze(out_file.PH) + np.squeeze(out_file.PHB))/9.8 - np.squeeze(out_file.HGT)
             zs_f = 0.5*(z_f[1:,:,:]+z_f[:-1,:,:])
+            zs_f_avg = np.nanmean(zs_f,axis=(1,2))
+            dist_to_1km = np.abs(zs_f_avg - 1000.0)
+            top_ind = np.where(dist_to_1km == np.nanmin(dist_to_1km))[0][0]
             z_top = zs_f[top_ind,:,:]
             z_bot = zs_f[bot_ind,:,:]
             bb_temp_top = bb_temp[top_ind,:,:]
@@ -146,14 +150,19 @@ def spatial_breeze_check(onshore_min,
             v_top = out_file.VGRD_P0_L100_GLC0.sel(lv_ISBL1=85000.0)
 
         wdir1km = 180. + np.degrees(np.arctan2(u_top, v_top))
-        wdir_cutoff = np.nanpercentile(wdir1km - dir10,wdir_cutoff_pct)
+        #wdir_cutoff = np.nanpercentile(wdir1km - dir10,wdir_cutoff_pct) # PSH
+        #print('PSH',wdir_cutoff)
+        wdir_cutoff = np.nanpercentile(np.abs(wdir1km - dir10),wdir_cutoff_pct)
+        #print('PSH',wdir_cutoff)
         
     wdir_cutoff = np.max([10.0,wdir_cutoff]) # Lower limit
     wdir_cutoff = np.min([100.0,wdir_cutoff])# Upper limit
 
     good_wind_dir = onshore_winds.copy()
     diff_wind_dir = onshore_winds.copy()
-
+    
+    test_meso  = np.zeros(np.shape(onshore_winds))*np.nan
+    test_local = np.zeros(np.shape(onshore_winds))*np.nan
     for ii in np.arange(window_start_i,nx-window_start_i):
         for jj in np.arange(window_start_j,ny-window_start_j):
             
@@ -181,13 +190,15 @@ def spatial_breeze_check(onshore_min,
                 if (local_wind > 0.0) and (meso_wind < 0.0):
                     print(meso_wind,local_wind)
                     meso_wind += 360.0
-                #wind_diff = np.abs(meso_wind - local_wind)
-                wind_diff = meso_wind - local_wind
+                #wind_diff = meso_wind - local_wind # PSH
+                wind_diff = np.abs(meso_wind - local_wind)
                 diff_wind_dir[jj,ii] = wind_diff
                 is_different = (wind_diff >= wdir_cutoff)
 
                 if ~is_different and meso_onshore:
                     good_wind_dir[jj,ii] = 0.0
+                test_meso[jj,ii]  = meso_wind
+                test_local[jj,ii] = local_wind
                     
     
     
@@ -224,12 +235,6 @@ def spatial_breeze_check(onshore_min,
         print('Whole domain is neutral or convective. Calculating dT_cutoff over whole domain.')
         dT_cutoff = np.max([0.0,np.nanpercentile(dT,dT_cutoff_pct)])
         
-        #if (np.nanpercentile(inland_dT,dT_cutoff_pct) > np.nanpercentile(near_shore_dT,dT_cutoff_pct)):
-        #    dT_cutoff = np.max([0.0,np.nanpercentile(near_shore_dT,dT_cutoff_pct)])
-        
-        #dT_cutoff = np.max([0.0,
-        #                    np.nanpercentile(inland_dT,dT_cutoff_pct),
-        #                    np.nanpercentile(near_shore_dT,dT_cutoff_pct)]) # Lower limit
     print('cutoff all: {}'.format(dT_cutoff))
 
 
@@ -252,7 +257,10 @@ def spatial_breeze_check(onshore_min,
     if check_rain:
         if rain_da is None:
             if model == 'HRRR':
-                rain_da = out_file.APCP_P8_L1_GLC0_acc
+                try:
+                    rain_da = out_file.APCP_P8_L1_GLC0_acc
+                except:
+                    rain_da = out_file.APCP_P8_L1_GLC0_acc1h
             else:
                 var_list = list(out_file.variables)
                 rain_vars = []
@@ -313,7 +321,12 @@ def spatial_breeze_check(onshore_min,
         dtime = ds.XTIME.expand_dims('datetime')
         ds = ds.drop('XTIME')
     elif model == 'HRRR':
+        try:
+            forecast_time = pd.to_timedelta(out_file.TMP_P0_L103_GLC0.forecast_time,'h')
+        except:
+            forecast_time = pd.to_timedelta(0,'h')
         dtime = xr.DataArray([pd.to_datetime(out_file.TMP_P0_L103_GLC0.initial_time,format='%m/%d/%Y (%H:%M)')],dims=['datetime'])
+        dtime += forecast_time
     ds['datetime'] = dtime
 
     return(ds)
@@ -1041,6 +1054,7 @@ def find_onshore_minmax(land_mask,
                 # Break down the water bodies into groups:
                 water_bodies = skimage.morphology.label(~np.isnan(deg_water)).astype(np.float32)
                 water_bodies[water_bodies==0.0] = np.nan
+                water_bodies_orig = water_bodies.copy()
 
                 water_body_size = {}
                 water_body_dist = {}
@@ -1171,50 +1185,93 @@ def find_onshore_minmax(land_mask,
                         mid_xe = max_water_dist*np.cos(np.radians(convert_met_to_math(np.nanmedian(deg_water))))
                         mid_ye = max_water_dist*np.sin(np.radians(convert_met_to_math(np.nanmedian(deg_water))))
 
-                        fig = plt.figure(figsize=(12,9))
-                        lm_pltF = plt.subplot2grid((2,2),(0,0),aspect='equal')
+                        
+                        
+                        fig = plt.figure(figsize=(18,9))
+                        lm_pltF = plt.subplot2grid((2,3),(0,0),colspan=2,rowspan=2,aspect='equal')
+                        dist_plt = plt.subplot2grid((2,3),(0,2),aspect='equal')
+                        deg_plt = plt.subplot2grid((2,3),(1,2),aspect='equal')
                         lon = land_mask.XLONG
                         lat = land_mask.XLAT
-                        plt_landmask = lm_pltF.pcolormesh(lon,lat,land_mask.where(land_mask==0.0),
-                                                          cmap=plt.cm.viridis)#,levels=[0.5],colors='k')
-                        lm_pltF.scatter(lon[jj,ii],lat[jj,ii],facecolor='b',marker='*',s=200)
+                        plt_landmask = lm_pltF.pcolormesh(xy,yx,land_mask.where(land_mask==0.0),
+                                                          cmap=plt.cm.Greys_r,
+                                                          rasterized=True)#,levels=[0.5],colors='k')
+                        lm_pltF.scatter(xy[jj,ii],yx[jj,ii],facecolor='b',marker='*',s=200)
+                        max_water_dist_ind = int(np.ceil(3000.0/max_water_dist))
+                        circ_latlon_dist = lon[jj+max_water_dist_ind,ii]
+                        draw_circle = plt.Circle((xy[jj,ii],yx[jj,ii]), max_water_dist,fill=False)
+                        lm_pltF.add_artist(draw_circle)
                         lm_pltF.tick_params(labelsize=15)
-                        lm_pltF.set_xlabel('Longitude',size=18)
-                        lm_pltF.set_ylabel('Latitude',size=18)
+                        lm_pltF.set_xlabel('Distance [km]',size=18)
+                        lm_pltF.set_ylabel('Distance [km]',size=18)
+                        lm_pltF.set_title('Location of Interest',size=18)
+                        lm_pltF.text(10,590,'a.)',size=18,ha='left',va='top')
 
-                        lm_plt = plt.subplot2grid((2,2),(0,1),aspect='equal')
-                        plt_landmask = lm_plt.pcolormesh(window_x,window_y,loc_water_mask,norm=Normalize(0,max_water_dist),cmap=plt.cm.viridis)
-                        plt.colorbar(plt_landmask,ax=lm_plt)
-                        lm_plt.scatter(0,0,facecolor='b',marker='*',s=400)
-                        lm_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
-                        lm_plt.set_ylim(np.nanmin(window_y)-5.0,np.nanmax(window_y)+5.0)
-                        lm_plt.tick_params(labelsize=15)
-                        lm_plt.set_ylabel('Distance [km]',size=18)
-
-                        dist_plt = plt.subplot2grid((2,2),(1,0),aspect='equal')
-                        dist_plt_cm = dist_plt.pcolormesh(window_x,window_y,dist_water,norm=Normalize(0,max_water_dist),cmap=plt.cm.viridis)
-                        plt.colorbar(dist_plt_cm,ax=dist_plt)
+                        dist_plt_cm = dist_plt.pcolormesh(window_x,window_y,water_bodies_orig,
+                                                          #norm=Normalize(0,max_water_dist),
+                                                          cmap=plt.cm.tab20,
+                                                          rasterized=True)
+                        dist_cbar = plt.colorbar(dist_plt_cm,ax=dist_plt)
+                        dist_cbar.ax.tick_params(labelsize=14)
+                        dist_cbar.ax.set_title('[km]')
                         dist_plt.scatter(0,0,facecolor='b',marker='*',s=400)
                         dist_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
                         dist_plt.set_ylim(np.nanmin(window_y)-5.0,np.nanmax(window_y)+5.0)
-                        dist_plt.tick_params(labelsize=15)
-                        dist_plt.set_xlabel('Distance [km]',size=18)
-                        dist_plt.set_ylabel('Distance [km]',size=18)
+                        dist_plt.tick_params(labelsize=15,labelbottom=False)
+                        draw_circle = plt.Circle((0.0, 0.0), max_water_dist,fill=False)
+                        dist_plt.add_artist(draw_circle)
+                        #dist_plt.set_ylabel('Distance [km]',size=18)
+                        dist_plt.set_title('Water ID',size=18)
+                        dist_plt.text(-110,105,'b.)',size=18,ha='left',va='top')
+                        dist_plt.text(40,-90,'I',size=17,color='lime')
+                        dist_plt.text(-50,-35,'III',size=17,color='r')
+                        dist_plt.text(22,100,'IV',size=17,color='r',va='top',ha='center')
+                        dist_plt.text(-10,-55,'II',size=17,color='r',va='center',ha='center')
 
-                        deg_plt = plt.subplot2grid((2,2),(1,1),aspect='equal')
-                        deg_plt_cm = deg_plt.pcolormesh(window_x,window_y,deg_water,cmap=plt.cm.viridis)#,norm=Normalize(0,360))
-                        plt.colorbar(deg_plt_cm,ax=deg_plt)
-                        deg_plt.plot([0,lwr_xe,upr_xe,0],[0,lwr_ye,upr_ye,0],c='r')
-                        deg_plt.plot([0,mid_xe],[0,mid_ye],c='g')
+                        deg_plt_cm = deg_plt.pcolormesh(window_x,window_y,deg_water,cmap=plt.cm.hsv,
+                                                        norm=Normalize(0,360),rasterized=True)
+                        deg_cbar = plt.colorbar(deg_plt_cm,ax=deg_plt)
+                        deg_cbar.set_ticks(np.arange(0,361,90))
+                        deg_cbar.ax.tick_params(labelsize=14)
+                        deg_cbar.ax.set_title('[˚]')
+                        lim_color = 'darkgreen'
+                        deg_plt.plot([0,lwr_xe],[0,lwr_ye],c=lim_color)
+                        lwr_pct_str = '{}'.format(int(low_pct))
+                        upr_pct_str = '{}'.format(int(upr_pct))
+                        deg_plt.text(lwr_xe*0.5,lwr_ye*0.35,lwr_pct_str + '$^{\mathrm{th}}$',size=15,ha='right',color=lim_color)
+                        deg_plt.plot([0,upr_xe],[0,upr_ye],c=lim_color)
+                        deg_plt.text(upr_xe*1.15,upr_ye*1.15,upr_pct_str+'$^{\mathrm{th}}$',size=15,ha='center',color=lim_color,va='center')
+                        deg_plt.plot([0,mid_xe],[0,mid_ye],c='k',ls=':')
                         deg_plt.scatter(0,0,facecolor='b',marker='*',s=400,zorder=5)
-                        ##ax[0].plot([0,upr_xe],[0,upr_ye],c='r')
-                        #deg_plt = ax[1].pcolormesh(window_x,window_y,deg_water)#,norm=Normalize(0,360))
-                        #plt.colorbar(deg_plt,ax=ax[1])
                         deg_plt.set_xlim(np.nanmin(window_x)-5.0,np.nanmax(window_x)+5.0)
                         deg_plt.set_ylim(np.nanmin(window_y)-5.0,np.nanmax(window_y)+5.0)
                         deg_plt.tick_params(labelsize=15)
+                        deg_plt.set_ylabel('Distance [km]',size=18)
                         deg_plt.set_xlabel('Distance [km]',size=18)
-                        plt.show()
+                        deg_plt.set_title('Water Direction',size=18)
+                        deg_plt.text(-110,105,'c.)',size=18,ha='left',va='top')
+                        pts  = np.arange(uppr_lim,lowr_lim,2.0)
+                        fill_c = 'goldenrod'
+                        x, y = 0,0
+                        npts = pts.size
+                        fill_x = [x]
+                        fill_y = [y]
+                        for dd,wdir in enumerate(pts):
+                            d = 270.0 - wdir    # Convert met degrees to polar
+                            plt_dist = -max_water_dist # Met degrees are FROM dir... need negative distance!
+                            fill_x.append(x+plt_dist*np.cos(np.radians(d)))
+                            fill_y.append(y+plt_dist*np.sin(np.radians(d)))
+
+                        deg_plt.fill(fill_x, fill_y,alpha=0.10,lw=None,color=fill_c,zorder=2)
+                        draw_circle = plt.Circle((0.0, 0.0), max_water_dist,fill=False)
+                        deg_plt.add_artist(draw_circle)
+                        deg_plt.text(40,-90,'I',size=17,color='k')
+                        deg_plt.text(-50,-35,'III',size=17,color='r',alpha=0.4)
+                        deg_plt.text(22,100,'IV',size=17,color='r',va='top',ha='center',alpha=0.4)
+                        deg_plt.text(-10,-55,'II',size=17,color='r',va='center',ha='center',alpha=0.4)
+                        return(fig)
+                        #plt.show()
+                        
                         print()
                         #wefwef
     
