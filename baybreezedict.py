@@ -146,7 +146,8 @@ def spatial_breeze_check(onshore_min,
             v_top = out_file.VGRD_P0_L100_GLC0.sel(lv_ISBL1=85000.0)
 
         wdir1km = 180. + np.degrees(np.arctan2(u_top, v_top))
-        wdir_cutoff = np.nanpercentile(wdir1km - dir10,wdir_cutoff_pct)
+        #wdir_cutoff = np.nanpercentile(wdir1km - dir10,wdir_cutoff_pct)
+        wdir_cutoff = np.nanpercentile(np.abs(wdir1km - dir10),wdir_cutoff_pct)
         
     wdir_cutoff = np.max([10.0,wdir_cutoff]) # Lower limit
     wdir_cutoff = np.min([100.0,wdir_cutoff])# Upper limit
@@ -181,8 +182,8 @@ def spatial_breeze_check(onshore_min,
                 if (local_wind > 0.0) and (meso_wind < 0.0):
                     print(meso_wind,local_wind)
                     meso_wind += 360.0
-                #wind_diff = np.abs(meso_wind - local_wind)
-                wind_diff = meso_wind - local_wind
+                #wind_diff = meso_wind - local_wind
+                wind_diff = np.abs(meso_wind - local_wind)
                 diff_wind_dir[jj,ii] = wind_diff
                 is_different = (wind_diff >= wdir_cutoff)
 
@@ -274,6 +275,7 @@ def spatial_breeze_check(onshore_min,
         is_raining /= is_raining
         is_raining = is_raining.fillna(0.0)
         bay_breeze_detection_dict['is_raining'] = is_raining
+        bay_breeze_detection_dict['rain'] = rain_da
 
     if check_clouds:
         if model == 'WRF':
