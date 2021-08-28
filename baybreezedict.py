@@ -2,7 +2,7 @@
   What it does: This dictionary contains functions for detecting
                 and validating bay breezes.
 
-  Who made it: patrick.hawbecker@nrel.gov
+  Who made it: hawbecke@ucar.edu
   When: 01/07/20
 '''
 import numpy as np
